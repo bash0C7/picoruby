@@ -7,6 +7,10 @@ MRuby::Build.new do |conf|
   conf.cc.defines << "PICORB_ALLOC_ALIGN=8"
   conf.cc.defines << "PICORB_ALLOC_ESTALLOC"
   conf.cc.defines << "PICORB_PLATFORM_POSIX"
+  # macOS host builds are also Darwin: activates build.darwin? so the picoruby-ble
+  # CoreBluetooth port (mrbgems/picoruby-ble/ports/darwin) compiles when the gem is
+  # included. Inert for builds that omit picoruby-ble (no gembox pulls it).
+  conf.cc.defines << "PICORB_PLATFORM_DARWIN" if RUBY_PLATFORM.include?("darwin")
 
   conf.cc.defines << "MRB_INT64"
   conf.cc.defines << "MRB_NO_BOXING"
