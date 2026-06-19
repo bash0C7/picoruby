@@ -4,6 +4,15 @@
 #include "mruby/hash.h"
 #include "mruby/array.h"
 
+#ifdef PICORB_PLATFORM_DARWIN
+/* Darwin port: the CoreBluetooth backend (a background queue) fills a thread-safe
+ * FIFO in ports/darwin. pop_packet (the per-tick VM-thread entry point) drains one
+ * packet from it via pble_drain_one into BLE_push_event, the single producer into
+ * the single-slot mailbox. Hooked inside pop_packet rather than mrblib/ble.rb so the
+ * shared Ruby poll loop stays free of any platform-specific call. */
+#include "PicoBLEDarwin-Swift.h"
+#endif
+
 static mrb_state *_mrb = NULL;
 static mrb_value write_values;
 static mrb_value read_values;
@@ -74,6 +83,16 @@ mrb_pop_heartbeat(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_pop_packet(mrb_state *mrb, mrb_value self)
 {
+#ifdef PICORB_PLATFORM_DARWIN
+  /* Move one packet from the CoreBluetooth FIFO into the single-slot mailbox before
+   * reading it. The backend emits bursts (e.g. all service results at once), so the
+   * FIFO buffers them and the decoder is handed one packet per poll tick. */
+  {
+    uint8_t buf[512];
+    int32_t n = pble_drain_one(buf, (int32_t)sizeof(buf));
+    if (n > 0) BLE_push_event(buf, (uint16_t)n);
+  }
+#endif
   mrb_value packet_value = mrb_nil_value();
   if (packet_mutex || !packet_flag) return packet_value;
   packet_mutex = true;
