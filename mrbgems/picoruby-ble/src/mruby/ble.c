@@ -5,6 +5,15 @@
 #include "mruby/array.h"
 #include "task.h"
 
+#ifdef PICORB_PLATFORM_DARWIN
+/* Darwin port: the CoreBluetooth backend (a background queue) fills a thread-safe
+ * FIFO in ports/darwin. pop_packet (the per-tick VM-thread entry point) drains one
+ * packet from it via pble_drain_one into BLE_push_event, the single producer into
+ * the single-slot mailbox. Hooked inside pop_packet rather than mrblib/ble.rb so the
+ * shared Ruby poll loop stays free of any platform-specific call. */
+#include "PicoBLEDarwin-Swift.h"
+#endif
+
 /*
  * GC strategy: only the current BLE instance is pinned with
  * mrb_gc_register (BTstack is a hardware singleton, so there is at
@@ -54,6 +63,13 @@ static mrb_value
 mrb_event_popped(mrb_state *mrb, mrb_value self)
 {
   if (0 < pending_event_count) pending_event_count--;
+#ifdef PICORB_PLATFORM_DARWIN
+  {
+    uint8_t buf[512];
+    int32_t n = pble_drain_one(buf, (int32_t)sizeof(buf));
+    if (n > 0) BLE_push_event(buf, (uint16_t)n);
+  }
+#endif
   return mrb_nil_value();
 }
 
