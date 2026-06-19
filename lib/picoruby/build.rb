@@ -158,6 +158,10 @@ module MRuby
       platform?(:posix)
     end
 
+    def darwin?
+      cc.defines.include?("PICORB_PLATFORM_DARWIN")
+    end
+
     def wasm?
       config = ENV['CONFIG'] || ENV['MRUBY_CONFIG']
       return true if config&.include?('picoruby-wasm')
