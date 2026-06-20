@@ -17,9 +17,16 @@ import CoreBluetooth
 // across services.
 
 final class PBLEDescNode {
-  let cb: CBDescriptor
+  // cb is nil for a synthetic CCCD: CoreBluetooth hides the 0x2902 descriptor,
+  // so we mint one for notify/indicate characteristics to expose the handle the
+  // canonical subscribe path ("write [0x01,0x00] to the CCCD handle") needs.
+  let cb: CBDescriptor?
+  let cccdChar: CBCharacteristic?   // set only for a synthetic CCCD: the char to setNotifyValue on
   var handle: UInt8 = 0
-  init(_ d: CBDescriptor) { cb = d }
+  init(_ d: CBDescriptor) { cb = d; cccdChar = nil }
+  init(syntheticCCCDFor char: CBCharacteristic) { cb = nil; cccdChar = char }
+  /// CBUUID.data-style bytes (big-endian) for the wire encoder.
+  var uuidData: [UInt8] { cb.map { [UInt8]($0.uuid.data) } ?? [0x29, 0x02] }
 }
 
 final class PBLECharNode {
@@ -59,6 +66,9 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   private var readDescByHandle: [UInt8: CBDescriptor] = [:]
   private var valueHandleForChar: [ObjectIdentifier: UInt8] = [:]
   private var handleForDesc: [ObjectIdentifier: UInt8] = [:]
+  private var cccdCharByHandle: [UInt8: CBCharacteristic] = [:]  // synthetic CCCD handle -> its characteristic
+  private var cccdStateByHandle: [UInt8: [UInt8]] = [:]          // synthetic CCCD handle -> last-written [enable,0x00]
+  private var pendingReadChars: Set<ObjectIdentifier> = []       // chars with an in-flight explicit read (vs notification)
   private var maxCharValueHandle: UInt8 = 0
   private var maxDescriptorHandle: UInt8 = 0
 
@@ -156,6 +166,7 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     cbQueue.async { [self] in
       if let ch = readCharByValueHandle[handle] {
         if ch.properties.contains(.read) {
+          pendingReadChars.insert(ObjectIdentifier(ch))  // mark so didUpdateValueFor emits 0xA5, not 0xA7
           peripheral?.readValue(for: ch)            // CB responds via didUpdateValueFor
         } else {
           // Non-readable characteristic: the decoder still reads every value handle.
@@ -166,9 +177,39 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         }
       } else if let d = readDescByHandle[handle] {
         peripheral?.readValue(for: d)
+      } else if cccdCharByHandle[handle] != nil {
+        // Synthetic CCCD has no CoreBluetooth descriptor to read; answer from the
+        // last-written state so the decoder's descriptor-value phase advances.
+        push(pbleValueResult(valueHandle: handle, value: cccdStateByHandle[handle] ?? [0x00, 0x00]))
+        if handle == maxDescriptorHandle { push(pbleQueryComplete()) }
       } else {
         // Unknown handle: still terminate the phase so the FSM does not stall.
         push(pbleQueryComplete())
+      }
+    }
+  }
+
+  // ---- GATT write / subscribe (called from the mruby VM thread) ----
+
+  /// Write without response to a characteristic value handle (e.g. NUS RX).
+  func writeValueWithoutResponse(_ conn: UInt16, _ valueHandle: UInt8, _ bytes: [UInt8]) {
+    cbQueue.async { [self] in
+      guard let ch = readCharByValueHandle[valueHandle], let p = peripheral else { return }
+      p.writeValue(Data(bytes), for: ch, type: .withoutResponse)
+    }
+  }
+
+  /// Write to a descriptor handle. For a synthetic CCCD this maps to
+  /// setNotifyValue (CoreBluetooth manages the real CCCD); a non-zero first byte
+  /// enables notify/indicate. Any other (real) descriptor is written directly.
+  func writeDescriptor(_ conn: UInt16, _ descHandle: UInt8, _ bytes: [UInt8]) {
+    cbQueue.async { [self] in
+      let enable = (bytes.first ?? 0) != 0
+      if let ch = cccdCharByHandle[descHandle] {
+        cccdStateByHandle[descHandle] = enable ? [0x01, 0x00] : [0x00, 0x00]
+        peripheral?.setNotifyValue(enable, for: ch)
+      } else if let d = readDescByHandle[descHandle], let p = peripheral {
+        p.writeValue(Data(bytes), for: d)
       }
     }
   }
@@ -178,7 +219,7 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
       if let node = charNode(forValueHandle: value) {
         for d in node.descriptors {
           push(pbleDescriptorResult(handle: d.handle,
-                                    uuidWire: pbleUuidWire(fromCBUUIDData: Array(d.cb.uuid.data))))
+                                    uuidWire: pbleUuidWire(fromCBUUIDData: d.uuidData)))
         }
       }
       push(pbleQueryComplete())
@@ -259,9 +300,16 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   }
 
   func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-    let vh = valueHandleForChar[ObjectIdentifier(characteristic)] ?? 0
-    push(pbleValueResult(valueHandle: vh, value: bytesOf(characteristic.value)))
-    if vh == maxCharValueHandle { push(pbleQueryComplete()) }
+    let oid = ObjectIdentifier(characteristic)
+    let vh = valueHandleForChar[oid] ?? 0
+    if pendingReadChars.remove(oid) != nil {
+      // Response to an explicit read issued during eager discovery.
+      push(pbleValueResult(valueHandle: vh, value: bytesOf(characteristic.value)))
+      if vh == maxCharValueHandle { push(pbleQueryComplete()) }
+    } else {
+      // Unsolicited update from a subscribed characteristic = notification/indication.
+      push(pbleNotification(valueHandle: vh, value: bytesOf(characteristic.value)))
+    }
   }
 
   func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor descriptor: CBDescriptor, error: Error?) {
@@ -278,6 +326,8 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     services.removeAll(); svcByStart.removeAll()
     readCharByValueHandle.removeAll(); readDescByHandle.removeAll()
     valueHandleForChar.removeAll(); handleForDesc.removeAll()
+    cccdCharByHandle.removeAll(); cccdStateByHandle.removeAll()
+    pendingReadChars.removeAll()
     pendingCharSvcs = 0; pendingDescChars = 0
   }
 
@@ -285,9 +335,29 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     if pendingCharSvcs == 0 && pendingDescChars == 0 { finalizeDiscovery() }
   }
 
+  /// CoreBluetooth hides the CCCD (0x2902) from discovered descriptors, so a
+  /// notify/indicate-capable characteristic would otherwise expose no handle for
+  /// the canonical subscribe path (write [0x01,0x00] to the CCCD handle). Mint a
+  /// synthetic CCCD node — matching what BTstack-based ports surface — before
+  /// handle allocation; writes to its handle map to setNotifyValue and reads are
+  /// answered from the stored state.
+  private func injectSyntheticCCCDs() {
+    let cccd = CBUUID(string: "2902")
+    for svc in services {
+      for ch in svc.characteristics {
+        let p = ch.cb.properties
+        guard p.contains(.notify) || p.contains(.indicate) else { continue }
+        if !ch.descriptors.contains(where: { $0.cb?.uuid == cccd }) {
+          ch.descriptors.append(PBLEDescNode(syntheticCCCDFor: ch.cb))
+        }
+      }
+    }
+  }
+
   /// Allocate synthetic uint8 handles by pre-order DFS and emit all service results
   /// followed by one query-complete. Drops entities past 255 (logged).
   private func finalizeDiscovery() {
+    injectSyntheticCCCDs()
     var cursor = 1
     func alloc() -> UInt8? { if cursor > 255 { return nil }; let h = UInt8(cursor); cursor += 1; return h }
     var capped = false
@@ -315,6 +385,8 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     readDescByHandle.removeAll()
     valueHandleForChar.removeAll()
     handleForDesc.removeAll()
+    cccdCharByHandle.removeAll()
+    cccdStateByHandle.removeAll()
     // Emit/register only fully-allocated services. A service truncated by the 255
     // cap keeps svc.end == 0 (set only after its whole subtree is numbered); emitting
     // it with end=0 would make every characteristic fail the decoder's
@@ -325,15 +397,20 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         readCharByValueHandle[ch.value] = ch.cb
         valueHandleForChar[ObjectIdentifier(ch.cb)] = ch.value
         for d in ch.descriptors where d.handle != 0 {
-          readDescByHandle[d.handle] = d.cb
-          handleForDesc[ObjectIdentifier(d.cb)] = d.handle
+          if let cb = d.cb {
+            readDescByHandle[d.handle] = cb
+            handleForDesc[ObjectIdentifier(cb)] = d.handle
+          } else if let cccdChar = d.cccdChar {
+            cccdCharByHandle[d.handle] = cccdChar
+            cccdStateByHandle[d.handle] = [0x00, 0x00]
+          }
         }
       }
       push(pbleServiceResult(start: svc.start, end: svc.end,
                              uuidWire: pbleUuidWire(fromCBUUIDData: Array(svc.cb.uuid.data))))
     }
     maxCharValueHandle = readCharByValueHandle.keys.max() ?? 0
-    maxDescriptorHandle = readDescByHandle.keys.max() ?? 0
+    maxDescriptorHandle = max(readDescByHandle.keys.max() ?? 0, cccdCharByHandle.keys.max() ?? 0)
     push(pbleQueryComplete())
   }
 
