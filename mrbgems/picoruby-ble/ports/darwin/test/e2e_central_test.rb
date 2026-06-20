@@ -1,22 +1,6 @@
-# End-to-end test: drive the real CoreBluetooth central against ANY BLE
-# peripheral (the Swift fixture, or an iOS/Android app like nRF Connect) over
-# the live radio. Requires Bluetooth permission for the running binary and a
-# peripheral on a SECOND device — a Mac acting as central cannot receive
-# advertisements from a peripheral on the same Mac.
-#
-# Skipped unless RUN_E2E=1 because this needs a real radio + a 2nd device.
-#
-#   # On a 2nd device (Mac shown; iOS nRF Connect also works):
-#   swift mrbgems/picoruby-ble/ports/darwin/test/test_peripheral.swift &
-#
-#   # On the central Mac:
-#   RUN_E2E=1 build/host/bin/picoruby \
-#     mrbgems/picoruby-ble/ports/darwin/test/e2e_central_test.rb
-#
-# Target selection is robust to peripherals that don't advertise a name:
-#   * if TARGET_NAME (env, default "PBLE-TEST") matches, connect to that
-#   * else connect to the strongest-RSSI device seen
-# PASS = connected, >=1 service discovered, >=1 characteristic value read.
+# Live-radio E2E for the CoreBluetooth central. Needs a peripheral on a 2nd
+# device (a Mac central cannot see a same-Mac peripheral). Skipped without
+# RUN_E2E=1. See ports/darwin/README.md for the full procedure.
 
 require "picotest"
 
@@ -25,7 +9,7 @@ class E2ECentral < BLE
   def initialize(role, target_name)
     super(role)
     @target_name = target_name
-    @seen = []           # [[rssi, address, address_type, name]]
+    @seen = []
     @picked = nil
   end
 
@@ -61,35 +45,33 @@ class E2ECentralTest < Picotest::Test
   TARGET_NAME = ENV["TARGET_NAME"] || "PBLE-TEST"
   SCAN_MS     = (ENV["SCAN_MS"] || "12000").to_i
 
-  def setup
-    skip "set RUN_E2E=1 to exercise a live radio (needs a 2nd-device peripheral)" \
-      unless ENV["RUN_E2E"] == "1"
-    @c = E2ECentral.new(:central, TARGET_NAME)
-    # Phase 1: scan; if a named target appears, advertising_report_callback
-    # connects immediately and the loop runs through discovery to :TC_IDLE.
-    @c.scan(timeout_ms: SCAN_MS, stop_state: :TC_IDLE, debug: true)
-    # Phase 2: if nothing was picked by name, connect to the strongest device
-    # and run discovery in a fresh poll loop.
-    if !@c.picked && @c.connect_strongest
-      @c.start(15000, :TC_IDLE)
+  # One test method so the 12s scan runs once, not once per assertion.
+  def test_scan_connect_discover_read
+    skip "RUN_E2E=1 not set" unless ENV["RUN_E2E"] == "1"
+
+    c = E2ECentral.new(:central, TARGET_NAME)
+    c.scan(timeout_ms: SCAN_MS, stop_state: :TC_IDLE, debug: true)
+    c.start(15000, :TC_IDLE) if !c.picked && c.connect_strongest
+
+    STDOUT.puts "[central] discovery done; state=#{c.state} services=#{c.services.size}"
+    c.services.each do |s|
+      STDOUT.puts "  svc uuid32=#{sprintf('0x%08X', s[:uuid32] || 0)} #{s[:start_handle]}..#{s[:end_handle]}"
+      s[:characteristics].each do |ch|
+        STDOUT.puts "    char uuid32=#{sprintf('0x%08X', ch[:uuid32] || 0)} vh=#{ch[:value_handle]} props=#{ch[:properties]} value=#{ch[:value].inspect}"
+        ch[:descriptors].each do |d|
+          STDOUT.puts "      desc uuid32=#{sprintf('0x%08X', d[:uuid32] || 0)} handle=#{d[:handle]} value=#{d[:value].inspect}"
+        end
+      end
     end
-  end
 
-  def test_reached_idle
-    assert_equal(:TC_IDLE, @c.state)
-  end
-
-  def test_at_least_one_service
-    assert(@c.services.size >= 1)
-  end
-
-  def test_at_least_one_characteristic_value_read
-    read_any = @c.services.any? { |s| s[:characteristics].any? { |ch| !ch[:value].nil? } }
-    assert(read_any)
+    assert_equal(:TC_IDLE, c.state)
+    assert(c.services.size >= 1)
+    assert(c.services.any? { |s| s[:characteristics].any? { |ch| !ch[:value].nil? } })
   end
 end
 
-# Self-driver (see decoder_contract_test.rb for rationale).
+# Picotest::Runner is CRuby-only (spawns target VM as subprocess); drive
+# in-process so this file runs via picoruby directly.
 test = E2ECentralTest.new
 puts "E2ECentralTest"
 test.list_tests.reverse.each do |m|
@@ -120,13 +102,7 @@ end
 r = test.result
 puts ""
 puts "success: #{r["success_count"]}, failure: #{r["failures"].size}, exception: #{r["exceptions"].size}, skip: #{r["skipped_count"]}"
-r["failures"].each do |f|
-  puts "  FAIL #{f[:method] || f["method"]}: #{f[:error_message] || f["error_message"]}"
-end
-r["exceptions"].each do |e|
-  puts "  ERR  #{e[:method] || e["method"]}: #{e[:raise_message] || e["raise_message"]}"
-end
-(r["skipped"] || []).each do |s|
-  puts "  SKIP #{s[:method] || s["method"]}: #{s[:reason] || s["reason"]}"
-end
+r["failures"].each   { |f| puts "  FAIL #{f[:method] || f["method"]}: #{f[:error_message] || f["error_message"]}" }
+r["exceptions"].each { |e| puts "  ERR  #{e[:method] || e["method"]}: #{e[:raise_message]  || e["raise_message"]}" }
+(r["skipped"] || []).each { |s| puts "  SKIP #{s[:method] || s["method"]}: #{s[:reason] || s["reason"]}" }
 exit(r["failures"].empty? && r["exceptions"].empty? ? 0 : 1)
