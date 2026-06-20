@@ -109,10 +109,10 @@ The C export from Swift uses `@c` (SE-0495, swift-tools-version 6.3);
 
 The port self-compiles when `picoruby-ble` is included on a Darwin host:
 `mrbgem.rake` runs `swift build` to produce the PicoBLEDarwin dylib,
-compiles `ports/darwin/*.c`, and adds the linker flags. Upstream's
-`build_config/default.rb` already defines `PICORB_PLATFORM_DARWIN` when
-`RUBY_PLATFORM.include?("darwin")`, so the only build_config addition is
-the gem:
+compiles `ports/darwin/*.c`, adds the linker flags, and defines
+`PICORB_PLATFORM_DARWIN` on `build.darwin?` so the shared C code's
+`#ifdef PICORB_PLATFORM_DARWIN` drain hook activates. The only build
+config addition needed is the gem:
 
 ```ruby
 conf.gem core: "picoruby-ble"
