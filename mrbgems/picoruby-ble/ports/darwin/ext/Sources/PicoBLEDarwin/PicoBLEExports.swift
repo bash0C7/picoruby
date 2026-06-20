@@ -36,6 +36,16 @@
   PBLECentral.shared.discoverDescriptors(conn, value, end)
 }
 
+@c public func pble_write_value(_ conn: UInt16, _ valueHandle: UInt8, _ data: UnsafePointer<UInt8>, _ size: UInt16) {
+  let bytes = [UInt8](UnsafeBufferPointer(start: data, count: Int(size)))
+  PBLECentral.shared.writeValueWithoutResponse(conn, valueHandle, bytes)
+}
+
+@c public func pble_write_descriptor(_ conn: UInt16, _ descHandle: UInt8, _ data: UnsafePointer<UInt8>, _ size: UInt16) {
+  let bytes = [UInt8](UnsafeBufferPointer(start: data, count: Int(size)))
+  PBLECentral.shared.writeDescriptor(conn, descHandle, bytes)
+}
+
 /// VM-thread drain: copy one queued packet into `buf` (capacity `cap`); returns
 /// the packet length, or 0 when empty or when an oversize packet was dropped.
 @c public func pble_drain_one(_ buf: UnsafeMutablePointer<UInt8>, _ cap: Int32) -> Int32 {

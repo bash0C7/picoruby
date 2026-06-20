@@ -59,6 +59,15 @@ public func pbleValueResult(valueHandle: UInt8, value: [UInt8]) -> [UInt8] {
   return [0xA5, 0x01, 0x00, 0x00, valueHandle, 0x00, UInt8(len), 0x00] + value.prefix(len)
 }
 
+/// 0xA7 GATT_EVENT_NOTIFICATION: same byte layout as 0xA5 — value_handle(4),
+/// len(6), value(8..). The canonical decoder (ble_central.rb) leaves 0xA7 as a
+/// no-op, so the application subclass parses these offsets; kept identical to
+/// pbleValueResult so the same byteslice reader serves both.
+public func pbleNotification(valueHandle: UInt8, value: [UInt8]) -> [UInt8] {
+  let len = min(value.count, 255)
+  return [0xA7, 0x01, 0x00, 0x00, valueHandle, 0x00, UInt8(len), 0x00] + value.prefix(len)
+}
+
 /// 0xda GAP_EVENT_ADVERTISING_REPORT: addr_type(3), addr(4..9 LSB-first), rssi=(rssi+256)&0xff(10),
 /// adv-data len(11), AD TLV(12..). AdvertisingReport requires >=14 bytes.
 public func pbleAdvReport(addr: [UInt8], addrType: UInt8, rssi: Int, advData: [UInt8]) -> [UInt8] {
