@@ -14,13 +14,13 @@ stubs and the write path is a stub. The port does not synthesize 0xA3
 included-service, 0xA6 long-value, or 0xA7/0xA8 notification/indication events,
 because `ble_central.rb` has no decode body for them.
 
-## Decode target is the decoder, not real BTstack
+## Decoder ABI
 
-The vendored BTstack (1.6.2) serializes GATT events with the struct base four
-bytes higher (service_id/connection_id inserted), but `ble_central.rb` reads the
-older ABI offsets (struct base 4). So "real BTstack bytes equal what the decoder
-expects" is false for this version. The port matches the decoder's offsets,
-given below.
+The decoder reads each packet at the offsets given below; the port emits
+exactly those layouts. BTstack 1.6.2 itself serializes GATT events with a
+service_id/connection_id field inserted 4 bytes before the struct base, so
+forwarding real BTstack bytes would not decode — the port produces the bytes
+the decoder reads, not the bytes BTstack emits.
 
 ## Event byte layouts (9 events)
 
@@ -61,10 +61,10 @@ Two threads, with all mruby access confined to the VM thread.
   `mrb_pop_packet`, under `#ifdef PICORB_PLATFORM_DARWIN`, calls
   `pble_drain_one` to copy one packet out and feeds it to `BLE_push_event`.
   This is the only place `BLE_push_event` runs.
-- `mrblib/ble.rb` is unchanged. Architecture-neutral Ruby carries no
-  platform-specific code. The only shared-code touch is the
-  `#ifdef PICORB_PLATFORM_DARWIN` drain hook in `src/mruby/ble.c`, matching
-  the platform `#ifdef` convention other gems already use.
+- `mrblib/ble.rb` carries no Darwin-specific code and stays
+  architecture-neutral. The only shared-code touch is the
+  `#ifdef PICORB_PLATFORM_DARWIN` drain hook in `src/mruby/ble.c`, following
+  the platform `#ifdef` convention used by other gems.
 - Commands issued from the VM thread (connect, scan, discover, read)
   dispatch the actual CoreBluetooth calls onto `pble.cb` so all
   CoreBluetooth interaction stays on that one queue.
@@ -107,21 +107,31 @@ The C export from Swift uses `@c` (SE-0495, swift-tools-version 6.3);
 
 ## Build
 
-This port needs a build config that includes the `picoruby-ble` gem on a
-Darwin host. A working config lives in the R2P2-macOS harness as
-`build_config/r2p2-picoruby-darwin.rb`; from this repository root, invoke it
-with the brew-installed OpenSSL paths:
+The port self-compiles when `picoruby-ble` is included on a Darwin host:
+`mrbgem.rake` runs `swift build` to produce the PicoBLEDarwin dylib,
+compiles `ports/darwin/*.c`, and adds the linker flags. Upstream's
+`build_config/default.rb` already defines `PICORB_PLATFORM_DARWIN` when
+`RUBY_PLATFORM.include?("darwin")`, so the only build_config addition is
+the gem:
+
+```ruby
+conf.gem core: "picoruby-ble"
+```
+
+Add `conf.gem core: "picoruby-picotest"` too if you want to run the tests
+in this directory.
+
+Host requirements: Xcode Command Line Tools (clang + Swift 6.3+), Homebrew
+`openssl@3` (the networking gembox links ssl/crypto). Bluetooth must be on
+and the terminal (or app launching the binary) must hold Bluetooth
+permission under *System Settings → Privacy & Security → Bluetooth*. Build
+with the brew paths so the linker finds OpenSSL:
 
 ```
 export LDFLAGS="-L$(brew --prefix openssl@3)/lib"
 export CFLAGS="-I$(brew --prefix openssl@3)/include"
-MRUBY_CONFIG=/absolute/path/to/r2p2-picoruby-darwin.rb rake
+MRUBY_CONFIG=path/to/your_config.rb rake
 ```
-
-Tools required on the central Mac: Xcode Command Line Tools (clang +
-Swift 6.3+), Homebrew `openssl@3`. Bluetooth must be on and the terminal
-(or app launching the binary) must hold Bluetooth permission under
-*System Settings → Privacy & Security → Bluetooth*.
 
 ## Tests
 
@@ -168,7 +178,7 @@ RUN_E2E=1 build/host/bin/picoruby \
 
 The driver connects to a device whose name includes `TARGET_NAME` (default
 `PBLE-TEST`), or to the strongest-RSSI device otherwise. Set `TARGET_NAME=""`
-to always pick the strongest. PASS = state `:TC_IDLE`, ≥ 1 service, ≥ 1
+to always pick the strongest. PASS = ≥ 1 service discovered + ≥ 1
 characteristic value read.
 
 ### ThreadSanitizer (optional)
