@@ -46,8 +46,37 @@
   PBLECentral.shared.writeDescriptor(conn, descHandle, bytes)
 }
 
+// ---- peripheral role (ports/darwin/ble.c, ble_peripheral.c) ----
+
+@c public func pble_peripheral_init(_ profile: UnsafePointer<UInt8>) {
+  PBLEPeripheral.shared.setup(profile: profile)
+}
+
+@c public func pble_peripheral_power_on() { PBLEPeripheral.shared.powerOn() }
+
+@c public func pble_peripheral_power_off() { PBLEPeripheral.shared.powerOff() }
+
+@c public func pble_peripheral_advertise(_ data: UnsafePointer<UInt8>, _ size: UInt16) {
+  PBLEPeripheral.shared.advertise([UInt8](UnsafeBufferPointer(start: data, count: Int(size))))
+}
+
+@c public func pble_peripheral_stop_advertise() { PBLEPeripheral.shared.stopAdvertise() }
+
+@c public func pble_peripheral_notify(_ attHandle: UInt16, _ data: UnsafePointer<UInt8>, _ size: UInt16) {
+  PBLEPeripheral.shared.notify(attHandle: attHandle,
+                               value: [UInt8](UnsafeBufferPointer(start: data, count: Int(size))))
+}
+
+@c public func pble_peripheral_request_can_send_now() {
+  PBLEPeripheral.shared.requestCanSendNow()
+}
+
 /// VM-thread drain: copy one queued packet into `buf` (capacity `cap`); returns
 /// the packet length, or 0 when empty or when an oversize packet was dropped.
+/// Also pumps the peripheral backend (flush pending writes + refresh the read
+/// cache) here, on the VM thread — the one place it may touch mruby. A no-op when
+/// the peripheral backend is inactive (central/observer builds).
 @c public func pble_drain_one(_ buf: UnsafeMutablePointer<UInt8>, _ cap: Int32) -> Int32 {
-  pbleSharedFifo.drainInto(buf, Int(cap))
+  PBLEPeripheral.shared.pump()
+  return pbleSharedFifo.drainInto(buf, Int(cap))
 }

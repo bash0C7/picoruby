@@ -9,6 +9,15 @@ private let baseUuidSuffix: [UInt8] = [0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00,
 
 public func pbleStateWorking() -> [UInt8] { [0x60, 0x01, 0x02] }
 
+// ---- peripheral-role events (consumed by a BLE peripheral subclass's packet_callback) ----
+// The peripheral decoder branches on event_packet[0] (and [2] for state); these carry
+// the codes mrblib/ble.rb's BTSTACK_EVENT_STATE / HCI_EVENT_DISCONNECTION_COMPLETE /
+// ATT_EVENT_MTU_EXCHANGE_COMPLETE / ATT_EVENT_CAN_SEND_NOW peers expect.
+public func pblePeripheralStateWorking() -> [UInt8] { [0x60, 0x01, 0x02] }
+public func pblePeripheralDisconnect() -> [UInt8] { [0x05, 0x01, 0x00] }
+public func pblePeripheralMtuComplete() -> [UInt8] { [0xB5, 0x01, 0x00] }
+public func pblePeripheralCanSendNow() -> [UInt8] { [0xB7, 0x01, 0x00] }
+
 public func pbleQueryComplete() -> [UInt8] { [0xA0, 0x01] }
 
 public func pbleConnComplete(_ connHandle: UInt16) -> [UInt8] {
