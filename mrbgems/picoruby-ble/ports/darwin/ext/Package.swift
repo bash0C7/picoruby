@@ -6,7 +6,7 @@ import PackageDescription
 // contract (drive CoreBluetooth, feed the C side that synthesizes BTstack events).
 let package = Package(
   name: "PicoBLEDarwin",
-  platforms: [.macOS(.v11)],
+  platforms: [.macOS(.v11), .iOS(.v13)],
   products: [
     .library(name: "PicoBLEDarwin", type: .dynamic, targets: ["PicoBLEDarwin"]),
   ],
