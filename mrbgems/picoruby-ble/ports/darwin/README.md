@@ -9,10 +9,40 @@ implements.
 
 ## Scope
 
-Central and observer only. The peripheral and broadcaster backends are no-op
-stubs and the write path is a stub. The port does not synthesize 0xA3
-included-service, 0xA6 long-value, or 0xA7/0xA8 notification/indication events,
-because `ble_central.rb` has no decode body for them.
+Central, observer, and peripheral. A central/observer drives `CBCentralManager`
+and synthesizes the GATT-client events `ble_central.rb` decodes; a peripheral
+drives `CBPeripheralManager` and serves a GATT server built from the same
+`profile_data` blob the rp2040 port consumes (subclass `BLE` with role
+`:peripheral`). The broadcaster backend is a no-op stub. The central path does
+not synthesize 0xA3 included-service, 0xA6 long-value, or 0xA7/0xA8
+notification/indication events, because `ble_central.rb` has no decode body for
+them.
+
+### Peripheral role
+
+The peripheral backend (`PicoBLEPeripheral.swift`) parses the BTstack ATT-DB blob
+`mrblib/ble_gatt_database.rb` produces, rebuilds it as CoreBluetooth
+services/characteristics, and serves reads, writes, subscriptions, and
+notifications driven from Ruby. The GAP (0x1800) and GATT (0x1801) services are
+skipped — CoreBluetooth owns them. The CCCD (0x2902) is mapped to
+`CBPeripheralManager`'s subscribe/unsubscribe callbacks, so the canonical Ruby
+path (`pop_write_value(cccd_handle)` returning `"\x01\x00"`/`"\x00\x00"`) holds.
+
+Characteristic values live in the generic mruby read/write tables (`BLE_read_data`
+/ `BLE_write_data`), exactly as on rp2040. Because every CoreBluetooth delegate
+callback runs on the `pble.cb.peri` queue — not the VM thread — the backend never
+calls those tables from a callback: a read is answered from a Swift-side cache, a
+write or subscribe is queued, and both the cache refresh and the queued writes are
+applied on the VM thread by `pump()` (driven from `pble_drain_one` each poll
+tick). This keeps the "mruby only on the VM thread" invariant the central path
+relies on. These four peripheral events reach the Ruby `packet_callback`:
+
+| event | code | when |
+|---|---|---|
+| BTSTACK_EVENT_STATE (power-on) | 0x60 | `[0]=0x60, [2]=0x02`. Emitted once all services are added; Ruby advertises in response. |
+| HCI_EVENT_DISCONNECTION_COMPLETE | 0x05 | `[0]=0x05`. A central unsubscribes / drops. |
+| ATT_EVENT_MTU_EXCHANGE_COMPLETE | 0xB5 | `[0]=0xB5`. First subscription from a central. |
+| ATT_EVENT_CAN_SEND_NOW | 0xB7 | `[0]=0xB7`. In response to `request_can_send_now_event`. |
 
 ## Decoder ABI
 
@@ -95,9 +125,12 @@ CoreBluetooth objects live on the Swift side, so the registry does too
 | file | responsibility |
 |---|---|
 | `ext/Sources/PicoBLEDarwin/PicoBLECentral.swift` | CBCentralManager + delegates on `pble.cb`; owns the registry; builds packets per the layouts above and pushes them to the FIFO; `@c` exports for init/power/scan/connect/discover/read. |
+| `ext/Sources/PicoBLEDarwin/PicoBLEPeripheral.swift` | CBPeripheralManager + delegates on `pble.cb.peri`; parses the ATT-DB blob into CB services/characteristics; answers reads from a cache and queues writes; `pump()` (VM thread) flushes writes and refreshes the cache via the generic tables. |
 | `ext/Sources/PicoBLEDarwin/PicoBLEFifo.swift` | Thread-safe byte-packet FIFO; `drainInto` copies one packet to the VM thread and drops oversize packets. |
-| `ble.c`, `ble_central.c` | port ABI (`BLE_*`, `BLE_central_*`) delegating to the Swift `@c` exports; `pble_drain_one` bridges the FIFO to the C side. |
-| `ble_peripheral.c`, `ble_common.h` | peripheral/broadcaster no-op stubs. |
+| `ext/Sources/CBLEBridge/` | Declarations-only C module exposing `BLE_read_data` / `BLE_write_data` to Swift; bound at load time via `-undefined dynamic_lookup` (contributes no symbols). |
+| `ble.c`, `ble_central.c` | port ABI (`BLE_*`, `BLE_central_*`) delegating to the Swift `@c` exports; `BLE_init` routes by role; `pble_drain_one` bridges the FIFO to the C side. |
+| `ble_peripheral.c` | peripheral ABI (`BLE_peripheral_*`) delegating to the Swift peripheral backend; `notify` reads the value via the generic table and hands the bytes to Swift. |
+| `ble_common.h` | shared port include. |
 | `../../src/mruby/ble.c` (shared) | the `#ifdef PICORB_PLATFORM_DARWIN` drain hook in `mrb_pop_packet`. |
 | `../../mrbgem.rake` | on `build.darwin?`, defines `PICORB_PLATFORM_DARWIN`, builds the Swift backend (`PicoBLEDarwin`) and links the dylib, and compiles `ports/darwin/*.c`. |
 
