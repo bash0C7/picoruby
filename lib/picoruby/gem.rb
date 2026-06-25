@@ -7,8 +7,13 @@ module MRuby
       def setup_compilers
         original_setup_compilers
         return unless cc.build.posix?
-        # setup for POSIX
-        ["posix", "common"].each do |subdir|
+        # setup for POSIX (and POSIX-family ports selected via conf.ports).
+        # Pick the first port dir present in effective_ports (e.g. darwin then
+        # posix). Fall back to "posix" so host posix builds (effective_ports
+        # => ["posix"]) and builds that don't set conf.ports are unchanged.
+        platform_port =
+          build.effective_ports.find { |p| Dir.exist?("#{dir}/ports/#{p}") } || "posix"
+        [platform_port, "common"].each do |subdir|
           Dir.glob("#{dir}/ports/#{subdir}/**/*.c").each do |src|
             obj = objfile(src.pathmap("#{build_dir}/ports/#{subdir}/%n"))
             build.libmruby_objs << obj
