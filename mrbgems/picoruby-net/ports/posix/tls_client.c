@@ -116,7 +116,9 @@ TLSClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   size_t total_received = 0;
   bool success = false;
 
-  (void)mrb;  /* Unused */
+  /* recv_buffer uses the mruby allocator (picorb_*) to match the mrb_free in
+   * src/mruby/net.c; system malloc would corrupt the mruby pool free-list under
+   * a custom allocator such as estalloc. */
 
   /* Initialize response */
   memset(res, 0, sizeof(*res));
@@ -180,7 +182,7 @@ TLSClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   }
 
   /* Allocate initial receive buffer */
-  recv_buffer = (char *)malloc(recv_buffer_size);
+  recv_buffer = (char *)picorb_alloc(mrb, recv_buffer_size);
   if (!recv_buffer) {
     snprintf(res->error_message, sizeof(res->error_message), "Memory allocation failed");
     goto cleanup;
@@ -190,7 +192,7 @@ TLSClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   while (1) {
     /* Ensure buffer has space */
     if (total_received + TLS_RECV_BUFFER_SIZE > recv_buffer_size) {
-      char *new_buffer = (char *)realloc(recv_buffer, recv_buffer_size * 2);
+      char *new_buffer = (char *)picorb_realloc(mrb, recv_buffer, recv_buffer_size * 2);
       if (!new_buffer) {
         snprintf(res->error_message, sizeof(res->error_message), "Memory reallocation failed");
         goto cleanup;
@@ -225,7 +227,7 @@ TLSClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
 
 cleanup:
   if (recv_buffer) {
-    free(recv_buffer);
+    picorb_free(mrb, recv_buffer);
   }
 
   /* Close TLS connection gracefully */

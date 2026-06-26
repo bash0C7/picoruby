@@ -40,7 +40,9 @@ UDPClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   struct timeval tv;
   bool success = false;
 
-  (void)mrb;  /* Unused in POSIX implementation */
+  /* recv_buffer uses the mruby allocator (picorb_*) to match the mrb_free in
+   * src/mruby/net.c; system malloc would corrupt the mruby pool free-list under
+   * a custom allocator such as estalloc. */
 
   /* Initialize response */
   memset(res, 0, sizeof(*res));
@@ -119,7 +121,7 @@ UDPClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   }
 
   /* Allocate receive buffer */
-  recv_buffer = (char *)malloc(UDP_RECV_BUFFER_SIZE);
+  recv_buffer = (char *)picorb_alloc(mrb, UDP_RECV_BUFFER_SIZE);
   if (!recv_buffer) {
     snprintf(res->error_message, sizeof(res->error_message), "Memory allocation failed");
     goto cleanup;
@@ -150,7 +152,7 @@ cleanup:
     close(sockfd);
   }
   if (recv_buffer) {
-    free(recv_buffer);
+    picorb_free(mrb, recv_buffer);
   }
 
   return success;

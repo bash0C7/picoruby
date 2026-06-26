@@ -145,7 +145,11 @@ TCPClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   size_t total_received = 0;
   bool success = false;
 
-  (void)mrb;  /* Unused in POSIX implementation */
+  /* recv_buffer is allocated with the mruby allocator (picorb_*) because the
+   * caller (src/mruby/net.c) frees res->recv_data with mrb_free. Using system
+   * malloc here would feed a system-heap pointer into the mruby pool allocator's
+   * free-list and corrupt it (harmless under the default allocator where
+   * mrb_free == free, fatal under a custom allocator such as estalloc). */
 
   /* Initialize response */
   memset(res, 0, sizeof(*res));
@@ -185,7 +189,7 @@ TCPClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   }
 
   /* Allocate initial receive buffer */
-  recv_buffer = (char *)malloc(recv_buffer_size);
+  recv_buffer = (char *)picorb_alloc(mrb, recv_buffer_size);
   if (!recv_buffer) {
     snprintf(res->error_message, sizeof(res->error_message), "Memory allocation failed");
     goto cleanup;
@@ -195,7 +199,7 @@ TCPClient_send(mrb_state *mrb, const net_request_t *req, net_response_t *res)
   while (1) {
     /* Ensure buffer has space */
     if (total_received + RECV_BUFFER_SIZE > recv_buffer_size) {
-      char *new_buffer = (char *)realloc(recv_buffer, recv_buffer_size * 2);
+      char *new_buffer = (char *)picorb_realloc(mrb, recv_buffer, recv_buffer_size * 2);
       if (!new_buffer) {
         snprintf(res->error_message, sizeof(res->error_message), "Memory reallocation failed");
         goto cleanup;
@@ -235,7 +239,7 @@ cleanup:
     close(sockfd);
   }
   if (recv_buffer) {
-    free(recv_buffer);
+    picorb_free(mrb, recv_buffer);
   }
 
   return success;
