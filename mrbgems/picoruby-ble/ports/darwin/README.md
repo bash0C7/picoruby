@@ -99,6 +99,12 @@ Two threads, with all mruby access confined to the VM thread.
   dispatch the actual CoreBluetooth calls onto `pble.cb` so all
   CoreBluetooth interaction stays on that one queue.
 
+This invariant is enforced by convention, not by code: nothing asserts or
+panics if a future change calls `BLE_read_data` / `BLE_write_data` /
+`mrb_*` from `pble.cb` or `pble.cb.peri`. The ThreadSanitizer run under
+Tests is the only check that would catch a violation, and only if the
+offending path is actually exercised.
+
 ## Synthetic handle registry
 
 CoreBluetooth objects live on the Swift side, so the registry does too
