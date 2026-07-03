@@ -46,31 +46,11 @@ relies on. These four peripheral events reach the Ruby `packet_callback`:
 
 ## Decoder ABI
 
-The decoder reads each packet at the offsets given below; the port emits
-exactly those layouts. BTstack 1.6.2 itself serializes GATT events with a
-service_id/connection_id field inserted 4 bytes before the struct base, so
-forwarding real BTstack bytes would not decode — the port produces the bytes
-the decoder reads, not the bytes BTstack emits.
-
-## Event byte layouts (9 events)
-
-Handles are read with `byteslice(N,1)` (low byte), so GATT handles must be ≤ 255.
-The only exception is the connection handle (`byteslice(4,2)`, 16-bit). Value and
-descriptor lengths are also one byte (≤ 255). UUIDs are emitted as 128-bit,
-LSB-first; the decoder's `uuid128_to_uuid32` does not recover the 16-bit alias
-(0x180D → 0x0D180000), so comparisons use the full 128-bit UUID.
-
-| event | code | byte layout |
-|---|---|---|
-| BTSTACK_EVENT_STATE (power-on) | 0x60 | `[0]=0x60, [2]=0x02 (HCI_STATE_WORKING)`. Emitted once after `centralManagerDidUpdateState == .poweredOn`. |
-| GAP_EVENT_ADVERTISING_REPORT | 0xda | ≥ 14 bytes: `[0]=0xda, [2]=adv subcode, [3]=addr_type (0x01 random), [4..9]=6-byte synthetic BD_ADDR (LSB-first, each byte non-zero), [10]=(rssi_dBm+256)&0xff, [11]=AD-data len, [12..]=AD TLV ([len][type][value])`. Includes a complete-local-name (0x09) TLV so `name_include?` works. |
-| LE_CONNECTION_COMPLETE | 0x3E (sub 0x01) | ≥ 6 bytes: `[0]=0x3E, [2]=0x01, [4..5]=conn_handle little-endian 16-bit` (e.g. 0x0040 → `40 00`). |
-| LE disconnection | 0x3E (sub 0x05) | `[0]=0x3E, [2]=0x05`. Omitted on the read-only happy path. |
-| GATT_EVENT_SERVICE_QUERY_RESULT | 0xA1 | ≥ 24 bytes: `[0]=0xA1, [4]=start_handle low, [6]=end_handle low, [8..23]=uuid128 LSB-first`. One per CBService, then a terminating 0xA0. end_handle is the real DFS subtree end. |
-| GATT_EVENT_CHARACTERISTIC_QUERY_RESULT | 0xA2 | ≥ 28 bytes: `[0]=0xA2, [4]=start low, [6]=value_handle low, [8]=end low, [10]=properties low, [12..27]=uuid128 LSB-first`. One per characteristic, then a 0xA0. Properties map from CBCharacteristicProperties (READ=0x02, WRITE=0x08, WRITE_WO_RESP=0x04, NOTIFY=0x10, INDICATE=0x20). |
-| GATT_EVENT_ALL_CHARACTERISTIC_DESCRIPTORS_QUERY_RESULT | 0xA4 | ≥ 22 bytes: `[0]=0xA4, [4]=descriptor handle low, [6..21]=uuid128 LSB-first`. UUID is at offset 6. One per descriptor, then a 0xA0. |
-| GATT_EVENT_CHARACTERISTIC_VALUE_QUERY_RESULT | 0xA5 | `8+len` bytes: `[0]=0xA5, [4]=value_handle low, [6]=value len (≤255), [8..]=value`. Shared by characteristic value and descriptor value. |
-| GATT_EVENT_QUERY_COMPLETE | 0xA0 | 2 bytes: `[0]=0xA0`. Exactly one after each phase batch; the decoder advances its FSM and shifts its worklist on it. A missing 0xA0 stalls the FSM (the decode loop has no timeout). |
+The port emits the exact byte layouts `mrblib/ble_central.rb` reads with
+`byteslice`; it does not forward real BTstack bytes. BTstack 1.6.2 serializes
+GATT events with a service_id/connection_id field inserted 4 bytes before the
+struct base, so real BTstack bytes would not decode — the port produces the
+bytes the decoder reads, not the bytes BTstack emits.
 
 ## Threading
 
@@ -123,26 +103,7 @@ CoreBluetooth objects live on the Swift side, so the registry does too
 - **Address**: CoreBluetooth exposes `peripheral.identifier` (a UUID), not a
   BD_ADDR. The port hashes it to six bytes and ORs each byte with 0x01,
   because `BLE_central_gap_connect` reads the address with `mrb_get_args 'z'`
-  (NUL terminated) and an interior 0x00 would truncate it. Both the wire
-  order and the reversed order are mapped back to the CBPeripheral.
-
-## Port files
-
-| file | responsibility |
-|---|---|
-| `ext/Sources/PicoBLEDarwin/PicoBLECentral.swift` | CBCentralManager + delegates on `pble.cb`; owns the registry; builds packets per the layouts above and pushes them to the FIFO; `@c` exports for init/power/scan/connect/discover/read. |
-| `ext/Sources/PicoBLEDarwin/PicoBLEPeripheral.swift` | CBPeripheralManager + delegates on `pble.cb.peri`; parses the ATT-DB blob into CB services/characteristics; answers reads from a cache and queues writes; `pump()` (VM thread) flushes writes and refreshes the cache via the generic tables. |
-| `ext/Sources/PicoBLEDarwin/PicoBLEFifo.swift` | Thread-safe byte-packet FIFO; `drainInto` copies one packet to the VM thread and drops oversize packets. |
-| `ext/Sources/CBLEBridge/` | Declarations-only C module exposing `BLE_read_data` / `BLE_write_data` to Swift; bound at load time via `-undefined dynamic_lookup` (contributes no symbols). |
-| `ble.c`, `ble_central.c` | port ABI (`BLE_*`, `BLE_central_*`) delegating to the Swift `@c` exports; `BLE_init` routes by role; `pble_drain_one` bridges the FIFO to the C side. |
-| `ble_peripheral.c` | peripheral ABI (`BLE_peripheral_*`) delegating to the Swift peripheral backend; `notify` reads the value via the generic table and hands the bytes to Swift. |
-| `ble_common.h` | shared port include. |
-| `../../src/mruby/ble.c` (shared) | the `#ifdef PICORB_PLATFORM_DARWIN` drain hook in `mrb_pop_packet`. |
-| `../../mrbgem.rake` | on `build.darwin?`, defines `PICORB_PLATFORM_DARWIN`, builds the Swift backend (`PicoBLEDarwin`) and links the dylib, and compiles `ports/darwin/*.c`. |
-
-The C export from Swift uses `@c` (SE-0495, swift-tools-version 6.3);
-`@_cdecl` emits the C symbol but not a declaration in the generated
-`-Swift.h`.
+  (NUL terminated) and an interior 0x00 would truncate it.
 
 ## Build
 
