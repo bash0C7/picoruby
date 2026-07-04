@@ -49,6 +49,11 @@ final class PBLESvcNode {
 final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @unchecked Sendable {
   static let shared = PBLECentral()
 
+  // Bluetooth SIG-assigned 16-bit UUID for the Client Characteristic
+  // Configuration Descriptor (matches mrblib/ble.rb's
+  // CLIENT_CHARACTERISTIC_CONFIGURATION = 0x2902).
+  private let cccdUUID = CBUUID(string: "2902")
+
   private let cbQueue = DispatchQueue(label: "pble.cb")
   private var manager: CBCentralManager?
   private var powerRequested = false
@@ -342,12 +347,11 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   /// handle allocation; writes to its handle map to setNotifyValue and reads are
   /// answered from the stored state.
   private func injectSyntheticCCCDs() {
-    let cccd = CBUUID(string: "2902")
     for svc in services {
       for ch in svc.characteristics {
         let p = ch.cb.properties
         guard p.contains(.notify) || p.contains(.indicate) else { continue }
-        if !ch.descriptors.contains(where: { $0.cb?.uuid == cccd }) {
+        if !ch.descriptors.contains(where: { $0.cb?.uuid == cccdUUID }) {
           ch.descriptors.append(PBLEDescNode(syntheticCCCDFor: ch.cb))
         }
       }
@@ -397,7 +401,17 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         readCharByValueHandle[ch.value] = ch.cb
         valueHandleForChar[ObjectIdentifier(ch.cb)] = ch.value
         for d in ch.descriptors where d.handle != 0 {
-          if let cb = d.cb {
+          if let cb = d.cb, cb.uuid == cccdUUID {
+            // Some peripherals/OS combinations DO expose a real CBDescriptor
+            // for the CCCD (injectSyntheticCCCDs then skips minting a
+            // synthetic one), but CoreBluetooth always forbids writing a CCCD
+            // directly regardless of whether it happens to be enumerable
+            // (NSInternalInconsistencyException: "...must be configured using
+            // setNotifyValue:forCharacteristic:"). Route it the same as a
+            // synthetic CCCD so writeDescriptor always uses setNotifyValue.
+            cccdCharByHandle[d.handle] = ch.cb
+            cccdStateByHandle[d.handle] = [0x00, 0x00]
+          } else if let cb = d.cb {
             readDescByHandle[d.handle] = cb
             handleForDesc[ObjectIdentifier(cb)] = d.handle
           } else if let cccdChar = d.cccdChar {
