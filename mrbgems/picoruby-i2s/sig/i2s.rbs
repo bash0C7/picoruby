@@ -1,0 +1,8 @@
+class I2S
+  def initialize: (sample_rate: Integer, ?bits: Integer, ?mono: bool) -> void
+  def write: (String pcm) -> Integer
+  def close: () -> Integer
+  private def _init: (Integer sample_rate, Integer bits, Integer mono) -> Integer
+  private def _write: (String pcm) -> Integer
+  private def _deinit: () -> Integer
+end
