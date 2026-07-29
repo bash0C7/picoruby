@@ -71,9 +71,17 @@ class DarwinProbePeripheral < BLE
       @notify_on = false
       advertise(@adv_data)
     end
+    # poll runs here as well as from heartbeat_callback because the darwin
+    # port's heartbeat never fires for a peripheral -- measured: a tick print
+    # every 30 ticks produced nothing in 18s, so pop_write_value would never be
+    # called and this side could never witness anything. packet_callback does
+    # fire (the "up" line above proves it), and PicoBLEPeripheral.swift:336
+    # pushes an MTU event on didSubscribeTo, so a subscribe always gives us a
+    # tick to drain both pending writes on.
+    poll
   end
 
-  def heartbeat_callback
+  def poll
     @counter += 1
     push_read_value(@notify_handle, Utils.int16_to_little_endian(@counter))
 
@@ -85,7 +93,11 @@ class DarwinProbePeripheral < BLE
       @saw_write = true
       puts "[darwin-peri] C1 characteristic write received value=#{v.inspect}"
     end
-    request_can_send_now_event if @notify_on && @counter % 3 == 0
+    request_can_send_now_event if @notify_on
+  end
+
+  def heartbeat_callback
+    poll
   end
 end
 
