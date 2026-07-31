@@ -2,7 +2,7 @@ require 'mbedtls'
 begin
   require 'cyw43'
 rescue LoadError
-  # CYW43 only exists on RP2040W builds. ESP32 / host builds skip.
+  # Only Pico W / Pico 2 W build picoruby-cyw43 in (see mrbgem.rake).
 end
 
 class BLE
@@ -89,7 +89,7 @@ class BLE
       end
     end
     _init(profile_data)
-    init_central if @role == :central || @role == :observer
+    init_central if @role == :central
   end
 
   attr_reader :role
