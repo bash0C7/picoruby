@@ -57,4 +57,10 @@ if [ "$ONLY" = all ] || [ "$ONLY" = central ]; then
             com.bash0c7.picocentraltest test_central_bin
 fi
 
+if [ "$ONLY" = all ] || [ "$ONLY" = flood ]; then
+  swiftc "$TEST_DIR/test_flood.swift" -o /tmp/test_flood_bin
+  bundle_it PicoFloodTest /tmp/test_flood_bin \
+            com.bash0c7.picofloodtest test_flood_bin
+fi
+
 echo "[bundles] done. Bluetooth permission must be re-granted for each rebuilt app."
