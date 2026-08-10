@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
 
 #include "../../include/ble.h"
 #include "ble_common.h"
@@ -16,6 +17,45 @@
 
 /* Set in BLE_init; routes power control to the right Swift backend. */
 static int current_role = BLE_ROLE_NONE;
+
+/* Same period the other ports use: ports/rp2040/ble.c's HEARTBEAT_PERIOD_MS and
+ * the esp32 port's HEARTBEAT_PERIOD_US. */
+#define HEARTBEAT_PERIOD_MS 1000
+
+/* mrblib/ble.rb's run loop calls `heartbeat_callback if pop_heartbeat` every
+ * poll, and pop_heartbeat only reports true once a port has called
+ * BLE_heartbeat(). rp2040 drives that from a btstack timer and the esp32 port
+ * from an esp_timer; CoreBluetooth offers no equivalent, and the Swift backend
+ * is barred from calling into mruby-adjacent code (see ports/darwin/README.md),
+ * so the period is measured here and driven from the VM thread instead.
+ *
+ * Without it heartbeat_callback never runs, which on a peripheral means nothing
+ * ever calls pop_write_value: PicoBLEPeripheral.swift's didReceiveWrite pushes
+ * no event, so an inbound write reaches the mruby write-value table and then
+ * sits there unread, and the table only grows.
+ *
+ * Called from src/mruby/ble.c's pop_packet, this port's only per-tick VM-thread
+ * entry point. The first call starts the period rather than firing, matching a
+ * timer that is armed and then expires. */
+void
+picoruby_ble_darwin_heartbeat_tick(void)
+{
+  static bool started = false;
+  static uint64_t last_ms = 0;
+  struct timespec ts;
+  uint64_t now_ms;
+
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return;
+  now_ms = (uint64_t)ts.tv_sec * 1000 + (uint64_t)(ts.tv_nsec / 1000000);
+  if (!started) {
+    started = true;
+    last_ms = now_ms;
+    return;
+  }
+  if (now_ms - last_ms < HEARTBEAT_PERIOD_MS) return;
+  last_ms = now_ms;
+  BLE_heartbeat();
+}
 
 int
 BLE_init(const uint8_t *profile, int ble_role)

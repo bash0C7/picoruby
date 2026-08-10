@@ -11,6 +11,9 @@
  * the single-slot mailbox. Hooked inside pop_packet rather than mrblib/ble.rb so the
  * shared Ruby poll loop stays free of any platform-specific call. */
 #include "PicoBLEDarwin-Swift.h"
+/* ports/darwin/ble.c. CoreBluetooth has no run-loop timer to hang the heartbeat
+ * off, so the port measures the period itself and this is where it gets ticked. */
+void picoruby_ble_darwin_heartbeat_tick(void);
 #endif
 
 static mrb_state *_mrb = NULL;
@@ -91,6 +94,7 @@ mrb_pop_packet(mrb_state *mrb, mrb_value self)
     uint8_t buf[512];
     int32_t n = pble_drain_one(buf, (int32_t)sizeof(buf));
     if (n > 0) BLE_push_event(buf, (uint16_t)n);
+    picoruby_ble_darwin_heartbeat_tick();
   }
 #endif
   mrb_value packet_value = mrb_nil_value();
