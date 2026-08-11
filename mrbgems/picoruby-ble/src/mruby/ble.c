@@ -7,10 +7,10 @@
 
 #ifdef PICORB_PLATFORM_DARWIN
 /* Darwin port: the CoreBluetooth backend (a background queue) fills a thread-safe
- * FIFO in ports/darwin. pop_packet (the per-tick VM-thread entry point) drains one
- * packet from it via pble_drain_one into BLE_push_event, the single producer into
- * the single-slot mailbox. Hooked inside pop_packet rather than mrblib/ble.rb so the
- * shared Ruby poll loop stays free of any platform-specific call. */
+ * FIFO in ports/darwin. mrb_event_popped (the per-tick VM-thread entry point)
+ * drains one packet from it via pble_drain_one into BLE_push_event. Hooked here
+ * rather than mrblib/ble.rb so the shared Ruby poll loop stays free of any
+ * platform-specific call. */
 #include "PicoBLEDarwin-Swift.h"
 /* ports/darwin/ble.c. CoreBluetooth has no run-loop timer to hang the heartbeat
  * off, so the port measures the period itself and this is where it gets ticked. */

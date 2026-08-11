@@ -13,7 +13,7 @@ MRuby::Gem::Specification.new('picoruby-ble') do |spec|
     # The port's own CoreBluetooth Swift backend: build to a dynamic library and
     # emit a C header for the port C to call.
     # PICORB_PLATFORM_DARWIN (matches build.darwin? predicate + other gems' platform
-    # gating) gates the shared src/mruby/ble.c pop_packet FIFO drain.
+    # gating) gates the shared src/mruby/ble.c mrb_event_popped FIFO drain.
     spec.cc.defines << 'PICORB_PLATFORM_DARWIN'
 
     ext_dir = "#{dir}/ports/darwin/ext"

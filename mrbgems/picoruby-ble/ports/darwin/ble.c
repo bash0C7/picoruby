@@ -3,7 +3,7 @@
  * Swift backend (CBCentralManager). The 4 shared functions (BLE_push_event/
  * BLE_heartbeat/BLE_write_data/BLE_read_data) are defined in src/mruby/ble.c and
  * MUST NOT be redefined here; the synthesized packets reach BLE_push_event when
- * src/mruby/ble.c's pop_packet drains the Swift FIFO (pble_drain_one) each tick. */
+ * src/mruby/ble.c's mrb_event_popped drains the Swift FIFO (pble_drain_one) each tick. */
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -22,21 +22,21 @@ static int current_role = BLE_ROLE_NONE;
  * the esp32 port's HEARTBEAT_PERIOD_US. */
 #define HEARTBEAT_PERIOD_MS 1000
 
-/* mrblib/ble.rb's run loop calls `heartbeat_callback if pop_heartbeat` every
- * poll, and pop_heartbeat only reports true once a port has called
- * BLE_heartbeat(). rp2040 drives that from a btstack timer and the esp32 port
- * from an esp_timer; CoreBluetooth offers no equivalent, and the Swift backend
- * is barred from calling into mruby-adjacent code (see ports/darwin/README.md),
- * so the period is measured here and driven from the VM thread instead.
+/* mrblib/ble.rb's run loop calls heartbeat_callback when @event_queue pops a
+ * :heartbeat symbol, pushed only when a port calls BLE_heartbeat(). rp2040
+ * drives that from a btstack timer and the esp32 port from an esp_timer;
+ * CoreBluetooth offers no equivalent, and the Swift backend is barred from
+ * calling into mruby-adjacent code (see ports/darwin/README.md), so the
+ * period is measured here and driven from the VM thread instead.
  *
  * Without it heartbeat_callback never runs, which on a peripheral means nothing
  * ever calls pop_write_value: PicoBLEPeripheral.swift's didReceiveWrite pushes
  * no event, so an inbound write reaches the mruby write-value table and then
  * sits there unread, and the table only grows.
  *
- * Called from src/mruby/ble.c's pop_packet, this port's only per-tick VM-thread
- * entry point. The first call starts the period rather than firing, matching a
- * timer that is armed and then expires. */
+ * Called from src/mruby/ble.c's mrb_event_popped, this port's only per-tick
+ * VM-thread entry point. The first call starts the period rather than firing,
+ * matching a timer that is armed and then expires. */
 void
 picoruby_ble_darwin_heartbeat_tick(void)
 {
