@@ -27,7 +27,7 @@ run_ms = (ENV["RUN_MS"] || "15000").to_i
 role   = (ENV["ROLE"] || "central").to_sym
 
 p = HeartbeatProbe.new(role)
-STDOUT.puts "[hbprobe] role=#{role} run_ms=#{run_ms} polling_unit_ms=#{BLE::POLLING_UNIT_MS}"
+STDOUT.puts "[hbprobe] role=#{role} run_ms=#{run_ms}"
 p.start(run_ms)
 STDOUT.puts "[hbprobe] ticks=#{p.ticks} in #{run_ms}ms"
 STDOUT.puts(p.ticks > 0 ? "[hbprobe] HEARTBEAT ALIVE" : "[hbprobe] HEARTBEAT DEAD — no port called BLE_heartbeat")

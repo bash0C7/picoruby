@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <time.h>
+#include <dispatch/dispatch.h>
 
 #include "../../include/ble.h"
 #include "ble_common.h"
@@ -24,37 +24,21 @@ static int current_role = BLE_ROLE_NONE;
 
 /* mrblib/ble.rb's run loop calls heartbeat_callback when @event_queue pops a
  * :heartbeat symbol, pushed only when a port calls BLE_heartbeat(). rp2040
- * drives that from a btstack timer and the esp32 port from an esp_timer;
- * CoreBluetooth offers no equivalent, and the Swift backend is barred from
- * calling into mruby-adjacent code (see ports/darwin/README.md), so the
- * period is measured here and driven from the VM thread instead.
- *
- * Without it heartbeat_callback never runs, which on a peripheral means nothing
- * ever calls pop_write_value: PicoBLEPeripheral.swift's didReceiveWrite pushes
- * no event, so an inbound write reaches the mruby write-value table and then
- * sits there unread, and the table only grows.
- *
- * Called from src/mruby/ble.c's mrb_event_popped, this port's only per-tick
- * VM-thread entry point. The first call starts the period rather than firing,
- * matching a timer that is armed and then expires. */
-void
-picoruby_ble_darwin_heartbeat_tick(void)
+ * drives that from a btstack timer and the esp32 port from an esp_timer, both
+ * armed independently of the VM thread. CoreBluetooth itself has no such
+ * timer, but GCD does: a dispatch source timer, armed once here, plays the
+ * same role. */
+static void
+start_heartbeat_timer(void)
 {
-  static bool started = false;
-  static uint64_t last_ms = 0;
-  struct timespec ts;
-  uint64_t now_ms;
-
-  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return;
-  now_ms = (uint64_t)ts.tv_sec * 1000 + (uint64_t)(ts.tv_nsec / 1000000);
-  if (!started) {
-    started = true;
-    last_ms = now_ms;
-    return;
-  }
-  if (now_ms - last_ms < HEARTBEAT_PERIOD_MS) return;
-  last_ms = now_ms;
-  BLE_heartbeat();
+  static dispatch_source_t timer = NULL;
+  if (timer != NULL) return;
+  timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                  dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+  dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                             HEARTBEAT_PERIOD_MS * NSEC_PER_MSEC, 0);
+  dispatch_source_set_event_handler(timer, ^{ BLE_heartbeat(); });
+  dispatch_resume(timer);
 }
 
 int
@@ -67,6 +51,7 @@ BLE_init(const uint8_t *profile, int ble_role)
   } else {
     pble_central_init((int32_t)ble_role);
   }
+  start_heartbeat_timer();
   return 0;
 }
 
