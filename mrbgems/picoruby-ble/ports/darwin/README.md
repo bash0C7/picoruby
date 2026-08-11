@@ -68,7 +68,7 @@ Two threads, with all mruby access confined to the VM thread.
   An oversize packet (larger than the drain buffer) is dropped and logged so
   it cannot wedge the FIFO head and stall every later packet.
 - **The VM thread** drains one packet per poll tick. The shared decoder's
-  `mrb_pop_packet`, under `#ifdef PICORB_PLATFORM_DARWIN`, calls
+  `mrb_event_popped`, under `#ifdef PICORB_PLATFORM_DARWIN`, calls
   `pble_drain_one` to copy one packet out and feeds it to `BLE_push_event`.
   This is the only place `BLE_push_event` runs.
 - `mrblib/ble.rb` carries no Darwin-specific code and stays
