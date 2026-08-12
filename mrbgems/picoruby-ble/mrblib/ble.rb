@@ -122,6 +122,7 @@ class BLE
   end
 
   def blink_led
+    return unless Object.const_defined?(:Shell)
     @led ||= Shell.get_device(:gpio, 'GPIO_LED_BLE')
     @led&.write(@led&.low? ? 1 : 0)
   end
