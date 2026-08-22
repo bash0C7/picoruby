@@ -5,12 +5,19 @@
 require "picotest"
 
 class E2ECentral < BLE
-  attr_reader :picked, :seen
+  attr_reader :picked, :seen, :notified
+
+  # Not exposed by ble_central.rb's own attr_reader list.
+  def conn_handle
+    @conn_handle
+  end
+
   def initialize(role, target_name)
     super(role)
     @target_name = target_name
     @seen = []
     @picked = nil
+    @notified = []
   end
 
   def advertising_report_callback(r)
@@ -38,6 +45,57 @@ class E2ECentral < BLE
     STDOUT.puts "[central] no name match; strongest device rssi=#{best[0]} name=#{best[3].inspect}"
     pick(best[1], best[2], best[3], best[0])
     true
+  end
+
+  # Find the first characteristic across all discovered services whose
+  # property bitmask includes `prop` (BLE::NOTIFY / BLE::WRITE). Matching on
+  # properties, not UUID, sidesteps the byte-swap this port applies to 16-bit
+  # UUIDs (see esp32_dynamic_read_test.rb's own comment on the same issue).
+  def find_by_property(prop)
+    services.each do |s|
+      s[:characteristics].each do |ch|
+        return ch if (ch[:properties] & prop) != 0
+      end
+    end
+    nil
+  end
+
+  # Non-blocking drain of one event from the queue, mirroring
+  # pc/stackchan-pico/app/ble_client.rb's StackchanRadio#pop_and_dispatch —
+  # this test exercises the exact same primitive the production central uses.
+  def pop_and_dispatch
+    event = @event_queue.pop(timeout_ms: 0)
+    return nil unless event
+    _event_popped
+    packet_callback(event) if event.is_a?(String)
+    event
+  end
+
+  # The base packet_callback's GATT_EVENT_NOTIFICATION branch is a bare
+  # `# TODO` (ble_central.rb:297) -- notifications are otherwise silently
+  # dropped. Decode and log every one so a failed wait leaves evidence behind.
+  def packet_callback(event_packet)
+    super
+    return unless event_packet.getbyte(0) == GATT_EVENT_NOTIFICATION
+    handle = Utils.little_endian_to_int16(event_packet.byteslice(4, 1))
+    len    = Utils.little_endian_to_int16(event_packet.byteslice(6, 1))
+    value  = event_packet.byteslice(8, len)
+    @notified << [handle, value]
+    STDOUT.puts "[notify-e2e] NOTIFY handle=#{handle} value=#{value.inspect}"
+  end
+
+  # Cooperative wait for at least one notification, draining via
+  # pop_and_dispatch rather than calling scan/start again (which would
+  # re-trigger hci_power_control and flush any in-flight packet -- see
+  # ble_client.rb's file-level comment for the full rationale).
+  def await_notification(ticks, poll_ms)
+    i = 0
+    while @notified.empty? && i < ticks
+      pop_and_dispatch
+      sleep_ms(poll_ms)
+      i += 1
+    end
+    @notified.shift
   end
 end
 
@@ -69,6 +127,49 @@ class E2ECentralTest < Picotest::Test
     # :TC_OFF. Discovery + read completion are what PASS actually means.
     assert(c.services.size >= 1)
     assert(c.services.any? { |s| s[:characteristics].any? { |ch| !ch[:value].nil? } })
+  end
+
+  # Counterpart: mrbgems/picoruby-ble/example/esp32/probe/peripheral_paths_probe.rb
+  # (bash0C7/picoruby, picoruby-ble-esp32-port branch). That probe's README
+  # names "a Central that connects, subscribes, writes" as its required peer;
+  # this fills that gap using the exact primitives StackchanCentral (the
+  # production Mac-side BLE central) relies on for its write-then-await-ACK
+  # path. Scoped to a single connect cycle -- the probe's own disconnect-twice
+  # (P6/P7) requirement needs a GAP disconnect this port's central role has no
+  # API for at all (verified: no `disconnect` in ble.rbs, ble_central.rb, or
+  # PicoBLECentral.swift), so it is out of scope here.
+  def test_subscribe_write_receive_notification
+    skip "RUN_E2E=1 not set" unless ENV["RUN_E2E"] == "1"
+
+    probe_name = ENV["PROBE_TARGET_NAME"] || "PBLE-PROBE"
+    c = E2ECentral.new(:central, probe_name)
+    c.scan(timeout_ms: SCAN_MS, stop_state: :TC_IDLE, debug: true)
+
+    STDOUT.puts "[notify-e2e] discovery done; state=#{c.state} services=#{c.services.size}"
+    notify_ch = c.find_by_property(BLE::NOTIFY)
+    write_ch  = c.find_by_property(BLE::WRITE)
+    STDOUT.puts "[notify-e2e] notify_ch=#{notify_ch.inspect}"
+    STDOUT.puts "[notify-e2e] write_ch=#{write_ch.inspect}"
+    assert(!notify_ch.nil?)
+    assert(!write_ch.nil?)
+    return unless notify_ch && write_ch
+
+    cccd_handle = notify_ch[:descriptors][0][:handle]
+    STDOUT.puts "[notify-e2e] subscribing cccd_handle=#{cccd_handle}"
+    c.write_characteristic_descriptor_using_descriptor_handle(c.conn_handle, cccd_handle, "\x01\x00")
+    # Settle: give CoreBluetooth's setNotifyValue time to land before the
+    # write goes out, matching ble_client.rb's subscribe_tx.
+    10.times { c.pop_and_dispatch; sleep_ms(100) }
+
+    payload = "E2E-WRITE-PROBE"
+    STDOUT.puts "[notify-e2e] writing #{payload.inspect} to vh=#{write_ch[:value_handle]}"
+    c.write_value_of_characteristic_without_response(c.conn_handle, write_ch[:value_handle], payload)
+
+    # 80 x 100ms = 8s -- generous vs. StackchanCentral::ACK_TIMEOUT_TICKS (30
+    # x 100ms = 3s) so a slow-but-working path still shows as a PASS here.
+    received = c.await_notification(80, 100)
+    STDOUT.puts "[notify-e2e] received=#{received.inspect} all_notified=#{c.notified.inspect}"
+    assert(!received.nil?)
   end
 end
 
