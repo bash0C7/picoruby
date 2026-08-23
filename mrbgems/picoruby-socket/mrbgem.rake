@@ -6,9 +6,15 @@ MRuby::Gem::Specification.new('picoruby-socket') do |spec|
 
   spec.require_name = 'socket'
 
+  # Apple cross-builds (iOS / watchOS) select ports/darwin through
+  # `conf.ports :darwin, :posix`: the same BSD sockets as ports/posix, but TLS
+  # on mbedTLS because those SDKs ship no OpenSSL. A macOS host build sets no
+  # conf.ports, keeps ports/posix and links OpenSSL as before.
+  darwin_port = build.effective_ports.first.to_s == "darwin" && File.directory?("#{dir}/ports/darwin")
+
   # Dependencies
-  unless build.posix?
-    spec.add_dependency 'picoruby-mbedtls'  # SSL/TLS support for non-POSIX platforms
+  if !build.posix? || darwin_port
+    spec.add_dependency 'picoruby-mbedtls'  # SSL/TLS support off the OpenSSL path
   end
   spec.add_dependency 'picoruby-machine'
   spec.add_dependency 'picoruby-metaprog' if build.femtoruby?
@@ -19,8 +25,8 @@ MRuby::Gem::Specification.new('picoruby-socket') do |spec|
   # Add include directory
   spec.cc.include_paths << "#{dir}/include"
 
-  # Add mbedtls include path for SSL support (non-POSIX only)
-  unless build.posix? || build.platform?(:esp32)
+  # Add mbedtls include path for SSL support (non-POSIX, and the darwin port)
+  if (!build.posix? && !build.platform?(:esp32)) || darwin_port
     mbedtls_dir = "#{MRUBY_ROOT}/mrbgems/picoruby-mbedtls/lib/mbedtls"
     if File.directory?(mbedtls_dir)
       spec.cc.include_paths << "#{mbedtls_dir}/include"
@@ -33,6 +39,11 @@ MRuby::Gem::Specification.new('picoruby-socket') do |spec|
       spec.cc.flags << '-Wno-undef'
     end
   end
+
+  # include/socket.h types picorb_ssl_context_t / picorb_ssl_socket_t for
+  # OpenSSL on POSIX; the darwin port defines them itself (mbedTLS) exactly
+  # like the non-POSIX ports, so tell the header to keep them opaque.
+  spec.cc.defines << "PICORB_SOCKET_TLS_MBEDTLS" if darwin_port
 
   unless build.posix? || build.platform?(:esp32)
     # LwIP configuration
