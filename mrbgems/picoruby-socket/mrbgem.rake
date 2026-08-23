@@ -10,7 +10,9 @@ MRuby::Gem::Specification.new('picoruby-socket') do |spec|
   # `conf.ports :darwin, :posix`: the same BSD sockets as ports/posix, but TLS
   # on mbedTLS because those SDKs ship no OpenSSL. A macOS host build sets no
   # conf.ports, keeps ports/posix and links OpenSSL as before.
-  darwin_port = build.effective_ports.first.to_s == "darwin" && File.directory?("#{dir}/ports/darwin")
+  # Same rule as mruby's port loader: the first port in the chain that has a
+  # directory in this gem is the one compiled.
+  darwin_port = build.effective_ports.find { |p| File.directory?("#{dir}/ports/#{p}") }.to_s == "darwin"
 
   # Dependencies
   if !build.posix? || darwin_port

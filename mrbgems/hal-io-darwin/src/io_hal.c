@@ -9,9 +9,9 @@
  *
  * This gem is the external HAL provider (hal-io-<conf>) for such builds. It
  * reuses the POSIX source textually; where spawning is prohibited, fork()
- * and execl() resolve to failures, so IO.popen raises Errno::ENOTSUP at run
- * time instead of the build failing. On macOS and iOS the result is the
- * POSIX HAL unchanged.
+ * and execl() resolve to failures (errno ENOTSUP), so IO.popen fails at run
+ * time with mruby-io's IOError instead of the build failing. On macOS and
+ * iOS the result is the POSIX HAL unchanged.
  */
 #include <TargetConditionals.h>
 
