@@ -14,7 +14,11 @@ module MRuby
         platform_port =
           build.effective_ports.find { |p| Dir.exist?("#{dir}/ports/#{p}") } || "posix"
         [platform_port, "common"].each do |subdir|
-          Dir.glob("#{dir}/ports/#{subdir}/**/*.c").each do |src|
+          # ports/<port>/ext/ holds a Swift package (picoruby-ble builds its own
+          # with `swift build`, app-linked ones are built by Xcode); its C shims
+          # include package headers and are not libmruby sources.
+          ext_prefix = "#{dir}/ports/#{subdir}/ext/"
+          Dir.glob("#{dir}/ports/#{subdir}/**/*.c").reject { |src| src.start_with?(ext_prefix) }.each do |src|
             obj = objfile(src.pathmap("#{build_dir}/ports/#{subdir}/%n"))
             build.libmruby_objs << obj
             file obj => src do |f|
