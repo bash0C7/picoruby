@@ -13,8 +13,13 @@
  * Ruby-side polling in src/mruby/ssl_socket.c expects.
  *
  * Certificate files: MBEDTLS_FS_IO is not enabled in picoruby-mbedtls's
- * config, so the *_file setters report false; use SSLContext#ca= etc. with
- * in-memory PEM instead.
+ * config, so the *_file setters read the file here (stdio) and hand the PEM
+ * bytes to the in-memory setters (SSLContext#set_ca_pem and friends).
+ *
+ * Lifetime: an SSL socket keeps pointing into its context's mbedtls_ssl_config
+ * until it is closed, and the two Ruby objects can be swept in either order,
+ * so the context is reference counted: SSLContext_free only marks it released
+ * and the last socket to close frees it.
  */
 
 #include "../../include/socket.h"
@@ -46,6 +51,8 @@ struct picorb_ssl_context {
   bool client_cert_loaded;
   bool client_key_loaded;
   int verify_mode;
+  int sockets;        /* SSL sockets still referencing ssl_config */
+  bool released;      /* SSLContext_free already called by the Ruby layer */
 };
 
 /* SSL socket structure */
@@ -78,6 +85,8 @@ SSLContext_create(picorb_state *vm)
   ctx->client_cert_loaded = false;
   ctx->client_key_loaded = false;
   ctx->verify_mode = SSL_VERIFY_PEER;
+  ctx->sockets = 0;
+  ctx->released = false;
 
   /* Seed the random number generator */
   if (mbedtls_ctr_drbg_seed(&ctx->ctr_drbg, mbedtls_entropy_func, &ctx->entropy, NULL, 0) != 0) {
@@ -102,10 +111,9 @@ SSLContext_create(picorb_state *vm)
   return ctx;
 }
 
-void
-SSLContext_free(picorb_state *vm, picorb_ssl_context_t *ctx)
+static void
+ssl_context_destroy(picorb_state *vm, picorb_ssl_context_t *ctx)
 {
-  if (!ctx) return;
   mbedtls_x509_crt_free(&ctx->cacert);
   mbedtls_x509_crt_free(&ctx->cert);
   mbedtls_pk_free(&ctx->key);
@@ -115,11 +123,54 @@ SSLContext_free(picorb_state *vm, picorb_ssl_context_t *ctx)
   picorb_free(vm, ctx);
 }
 
+void
+SSLContext_free(picorb_state *vm, picorb_ssl_context_t *ctx)
+{
+  if (!ctx) return;
+  ctx->released = true;
+  if (ctx->sockets == 0) ssl_context_destroy(vm, ctx);
+}
+
+/* Read a whole file for the *_file setters (stdio; no MBEDTLS_FS_IO). The
+ * buffer is NUL-terminated because the PEM parsers want the NUL counted. */
+static unsigned char *
+read_file(picorb_state *vm, const char *path, size_t *size)
+{
+  FILE *fp = fopen(path, "rb");
+  if (!fp) return NULL;
+  if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return NULL; }
+  long len = ftell(fp);
+  if (len < 0 || fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return NULL; }
+  unsigned char *buf = (unsigned char *)picorb_alloc(vm, (size_t)len + 1);
+  if (!buf) { fclose(fp); return NULL; }
+  size_t n = fread(buf, 1, (size_t)len, fp);
+  fclose(fp);
+  if (n != (size_t)len) { picorb_free(vm, buf); return NULL; }
+  buf[n] = '  mbedtls_entropy_free(&ctx->entropy);
+  picorb_free(vm, ctx);
+}
+
 bool
 SSLContext_set_ca_file(picorb_state *vm, picorb_ssl_context_t *ctx, const char *ca_file)
 {
   (void)vm; (void)ctx; (void)ca_file;
   return false;  /* no MBEDTLS_FS_IO; use SSLContext_set_ca with the PEM bytes */
+}
+';
+  *size = n;
+  return buf;
+}
+
+bool
+SSLContext_set_ca_file(picorb_state *vm, picorb_ssl_context_t *ctx, const char *ca_file)
+{
+  if (!ctx || !ca_file) return false;
+  size_t size;
+  unsigned char *pem = read_file(vm, ca_file, &size);
+  if (!pem) return false;
+  bool ok = SSLContext_set_ca(vm, ctx, pem, size);
+  picorb_free(vm, pem);
+  return ok;
 }
 
 bool
@@ -140,8 +191,13 @@ SSLContext_set_ca(picorb_state *vm, picorb_ssl_context_t *ctx, const void *addr,
 bool
 SSLContext_set_cert_file(picorb_state *vm, picorb_ssl_context_t *ctx, const char *cert_file)
 {
-  (void)vm; (void)ctx; (void)cert_file;
-  return false;  /* no MBEDTLS_FS_IO; use SSLContext_set_cert */
+  if (!ctx || !cert_file) return false;
+  size_t size;
+  unsigned char *pem = read_file(vm, cert_file, &size);
+  if (!pem) return false;
+  bool ok = SSLContext_set_cert(vm, ctx, pem, size);
+  picorb_free(vm, pem);
+  return ok;
 }
 
 bool
@@ -167,8 +223,13 @@ SSLContext_set_cert(picorb_state *vm, picorb_ssl_context_t *ctx, const void *add
 bool
 SSLContext_set_key_file(picorb_state *vm, picorb_ssl_context_t *ctx, const char *key_file)
 {
-  (void)vm; (void)ctx; (void)key_file;
-  return false;  /* no MBEDTLS_FS_IO; use SSLContext_set_key */
+  if (!ctx || !key_file) return false;
+  size_t size;
+  unsigned char *pem = read_file(vm, key_file, &size);
+  if (!pem) return false;
+  bool ok = SSLContext_set_key(vm, ctx, pem, size);
+  picorb_free(vm, pem);
+  return ok;
 }
 
 bool
@@ -255,6 +316,7 @@ SSLSocket_create(picorb_state *vm, picorb_ssl_context_t *ssl_ctx)
   memset(ssl_sock, 0, sizeof(picorb_ssl_socket_t));
 
   ssl_sock->ssl_ctx = ssl_ctx;
+  ssl_ctx->sockets++;
   ssl_sock->state = SOCKET_STATE_NONE;
 
   mbedtls_net_init(&ssl_sock->net_ctx);
@@ -372,11 +434,13 @@ SSLSocket_send(picorb_state *vm, picorb_ssl_socket_t *ssl_sock, const void *data
   (void)vm;
   if (!ssl_sock || ssl_sock->state != SOCKET_STATE_CONNECTED || !data) return -1;
 
-  int ret = mbedtls_ssl_write(&ssl_sock->ssl, (const unsigned char *)data, len);
+  /* The fd is blocking, so WANT_READ/WANT_WRITE only mean "call again";
+   * a 0 return would be read as a write failure by the Ruby layer. */
+  int ret;
+  do {
+    ret = mbedtls_ssl_write(&ssl_sock->ssl, (const unsigned char *)data, len);
+  } while (ret == MBEDTLS_ERR_SSL_WANT_WRITE || ret == MBEDTLS_ERR_SSL_WANT_READ);
   if (ret < 0) {
-    if (ret == MBEDTLS_ERR_SSL_WANT_WRITE || ret == MBEDTLS_ERR_SSL_WANT_READ) {
-      return 0; /* would block */
-    }
     ssl_sock->state = SOCKET_STATE_ERROR;
     return -1;
   }
@@ -442,8 +506,14 @@ SSLSocket_close(picorb_state *vm, picorb_ssl_socket_t *ssl_sock)
     mbedtls_ssl_close_notify(&ssl_sock->ssl);
   }
   mbedtls_net_free(&ssl_sock->net_ctx);   /* closes the fd */
-  mbedtls_ssl_free(&ssl_sock->ssl);
+  mbedtls_ssl_free(&ssl_sock->ssl);         /* last use of ssl_ctx->ssl_config */
   ssl_socket_drop_base(vm, ssl_sock);
+
+  picorb_ssl_context_t *ctx = ssl_sock->ssl_ctx;
+  if (ctx) {
+    ssl_sock->ssl_ctx = NULL;
+    if (--ctx->sockets == 0 && ctx->released) ssl_context_destroy(vm, ctx);
+  }
 
   if (ssl_sock->hostname) {
     picorb_free(vm, ssl_sock->hostname);

@@ -12,9 +12,12 @@
  * Darwin (macOS host / iOS / watchOS) console HAL for picoruby-machine.
  *
  * A CrossBuild with `conf.ports :darwin, :posix` compiles only this
- * directory for the gem (first match), so everything ports/posix/hal.c
- * provides has to exist here as well. The Darwin/XNU userland is a BSD
- * libc, so the implementations are the POSIX ones.
+ * directory for the gem (first match), so this file mirrors ports/posix/hal.c
+ * to keep the port complete for the mruby/c VM and for non-POSIX callers.
+ * Under PICORB_PLATFORM_POSIX with the mruby VM nothing references these
+ * symbols (src/machine.c and src/mruby/machine.c take the stdio path), so
+ * this object is never pulled from the archive. The Darwin/XNU userland is a
+ * BSD libc, so the implementations are the POSIX ones.
  *
  * One deliberate difference: under PICORB_VM_MRUBY the scheduler tick,
  * IRQ masking and idle/sleep primitives (mrb_hal_task_init and friends)
@@ -39,9 +42,13 @@
 
 /***** Local variables ******************************************************/
 /* SIGALRM mask for the tick-based IRQ emulation. Only the mruby/c path
- * arms the tick here; for the mruby VM the set stays empty and the
- * picorb_*_irq entry points below are no-ops kept for symbol parity. */
+ * arms the tick here and owns the mask; on the mruby VM the entry points
+ * below return without touching the signal mask (sigprocmask with an empty
+ * SIG_SETMASK would unblock everything). */
+#if defined(PICORB_VM_MRUBYC)
 static sigset_t sigset_, sigset2_;
+static bool tick_armed = false;
+#endif
 
 #if defined(PICORB_VM_MRUBYC)
 #define MRB_TICK_UNIT MRBC_TICK_UNIT
@@ -58,6 +65,7 @@ picorb_hal_init(void)
 {
   sigemptyset(&sigset_);
   sigaddset(&sigset_, SIGALRM);
+  tick_armed = true;
 
   struct sigaction sa;
   sa.sa_handler = sig_alarm;
@@ -118,7 +126,9 @@ picorb_hal_flush(int fd)
 void
 picorb_enable_irq(void)
 {
-  sigprocmask(SIG_SETMASK, &sigset2_, 0);
+#if defined(PICORB_VM_MRUBYC)
+  if (tick_armed) sigprocmask(SIG_SETMASK, &sigset2_, 0);
+#endif
 }
 
 
@@ -130,7 +140,9 @@ picorb_enable_irq(void)
 void
 picorb_disable_irq(void)
 {
-  sigprocmask(SIG_BLOCK, &sigset_, &sigset2_);
+#if defined(PICORB_VM_MRUBYC)
+  if (tick_armed) sigprocmask(SIG_BLOCK, &sigset_, &sigset2_);
+#endif
 }
 
 
