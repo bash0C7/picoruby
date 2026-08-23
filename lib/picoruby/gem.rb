@@ -13,6 +13,9 @@ module MRuby
         # => ["posix"]) and builds that don't set conf.ports are unchanged.
         platform_port =
           build.effective_ports.find { |p| Dir.exist?("#{dir}/ports/#{p}") } || "posix"
+        # Port objects an external `hal-<short>-<conf>` gem replaced: List#resolve_external_hal!
+        # already dropped them from objs; they must not come back through this hook.
+        replaced = (port_objs || []) - objs
         [platform_port, "common"].each do |subdir|
           # ports/<port>/ext/ holds a Swift package (picoruby-ble builds its own
           # with `swift build`, app-linked ones are built by Xcode); its C shims
@@ -20,6 +23,7 @@ module MRuby
           ext_prefix = "#{dir}/ports/#{subdir}/ext/"
           Dir.glob("#{dir}/ports/#{subdir}/**/*.c").reject { |src| src.start_with?(ext_prefix) }.each do |src|
             obj = objfile(src.pathmap("#{build_dir}/ports/#{subdir}/%n"))
+            next if replaced.include?(obj)
             build.libmruby_objs << obj
             file obj => src do |f|
               cc.run f.name, f.prerequisites.first
