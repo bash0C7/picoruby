@@ -146,17 +146,7 @@ read_file(picorb_state *vm, const char *path, size_t *size)
   size_t n = fread(buf, 1, (size_t)len, fp);
   fclose(fp);
   if (n != (size_t)len) { picorb_free(vm, buf); return NULL; }
-  buf[n] = '  mbedtls_entropy_free(&ctx->entropy);
-  picorb_free(vm, ctx);
-}
-
-bool
-SSLContext_set_ca_file(picorb_state *vm, picorb_ssl_context_t *ctx, const char *ca_file)
-{
-  (void)vm; (void)ctx; (void)ca_file;
-  return false;  /* no MBEDTLS_FS_IO; use SSLContext_set_ca with the PEM bytes */
-}
-';
+  buf[n] = '\0';
   *size = n;
   return buf;
 }
