@@ -163,7 +163,9 @@ bool TCPServer_listening(picorb_state *vm, picorb_tcp_server_t *server);
 #define SSL_VERIFY_NONE 0
 #define SSL_VERIFY_PEER 1
 
-#ifdef PICORB_PLATFORM_POSIX
+/* OpenSSL-backed on POSIX; ports that do TLS with mbedTLS on a POSIX socket
+ * (ports/darwin) define PICORB_SOCKET_TLS_MBEDTLS and own these structs. */
+#if defined(PICORB_PLATFORM_POSIX) && !defined(PICORB_SOCKET_TLS_MBEDTLS)
 /* Forward declaration for OpenSSL types */
 typedef struct ssl_ctx_st SSL_CTX;
 
@@ -190,7 +192,7 @@ int SSLContext_get_verify_mode(picorb_state *vm, picorb_ssl_context_t *ctx);
 void SSLContext_free(picorb_state *vm, picorb_ssl_context_t *ctx);
 
 /* SSL Socket API */
-#ifdef PICORB_PLATFORM_POSIX
+#if defined(PICORB_PLATFORM_POSIX) && !defined(PICORB_SOCKET_TLS_MBEDTLS)
 /* Forward declaration for OpenSSL types */
 typedef struct ssl_st SSL;
 
