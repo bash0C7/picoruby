@@ -41,3 +41,17 @@
 #endif
 
 #include "../../picoruby-mruby/lib/mruby/mrbgems/mruby-io/ports/posix/io_hal.c"
+
+/* mrbgem entry points (the generated gem_init.c calls them); the HAL itself
+ * is initialised by mruby-io through mrb_hal_io_init above. */
+void
+mrb_hal_io_darwin_gem_init(mrb_state *mrb)
+{
+  (void)mrb;
+}
+
+void
+mrb_hal_io_darwin_gem_final(mrb_state *mrb)
+{
+  (void)mrb;
+}
