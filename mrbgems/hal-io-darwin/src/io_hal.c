@@ -15,8 +15,12 @@
  */
 #include <TargetConditionals.h>
 
-/* Every header that declares fork/exec* must be seen before the macros
- * below, or the macros would rewrite the declarations themselves. */
+/* Same order as the POSIX source: io_hal.h before <sys/stat.h>, whose
+ * st_atime / st_mtime / st_ctime macros would otherwise rewrite the
+ * mrb_io_stat field names. Then every header that declares fork/exec*, so
+ * the macros below never touch a declaration. */
+#include <mruby.h>
+#include "io_hal.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
