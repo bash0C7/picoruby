@@ -26,6 +26,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
 
 /* mbedtls includes (MBEDTLS_NET_C is enabled under PICORB_PLATFORM_POSIX) */
 #include "mbedtls/net_sockets.h"
