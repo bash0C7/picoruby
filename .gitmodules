@@ -6,7 +6,7 @@
 	url = https://github.com/mruby/mruby.git
 [submodule "mrbgems/picoruby-machine/lib/estalloc"]
 	path = mrbgems/picoruby-machine/lib/estalloc
-	url = https://github.com/bash0C7/estalloc
+	url = https://github.com/picoruby/estalloc
 [submodule "mrbgems/mruby-compiler2"]
 	path = mrbgems/mruby-compiler
 	url = https://github.com/picoruby/mruby-compiler2
