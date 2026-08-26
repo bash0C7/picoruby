@@ -9,11 +9,12 @@ implements.
 
 ## Scope
 
-Central, observer, and peripheral. A central/observer drives `CBCentralManager`
-and synthesizes the GATT-client events `ble_central.rb` decodes; a peripheral
-drives `CBPeripheralManager` and serves a GATT server built from the same
-`profile_data` blob the rp2040 port consumes (subclass `BLE` with role
-`:peripheral`). The broadcaster backend is a no-op stub. The central path does
+Central, observer, peripheral, and broadcaster. A central/observer drives
+`CBCentralManager` and synthesizes the GATT-client events `ble_central.rb`
+decodes; a peripheral drives `CBPeripheralManager` and serves a GATT server built
+from the same `profile_data` blob the rp2040 port consumes (subclass `BLE` with
+role `:peripheral`). A broadcaster drives the same `CBPeripheralManager` with no
+GATT database — it only advertises. The central path does
 not synthesize 0xA3 included-service, 0xA6 long-value, or 0xA7/0xA8
 notification/indication events, because `ble_central.rb` has no decode body for
 them.
