@@ -46,9 +46,10 @@
   PBLECentral.shared.writeDescriptor(conn, descHandle, bytes)
 }
 
-// ---- peripheral role (ports/darwin/ble.c, ble_peripheral.c) ----
+// ---- peripheral / broadcaster roles (ports/darwin/ble.c, ble_peripheral.c) ----
 
-@c public func pble_peripheral_init(_ profile: UnsafePointer<UInt8>) {
+/// `profile` is NULL for the broadcaster role, which advertises without a GATT database.
+@c public func pble_peripheral_init(_ profile: UnsafePointer<UInt8>?) {
   PBLEPeripheral.shared.setup(profile: profile)
 }
 

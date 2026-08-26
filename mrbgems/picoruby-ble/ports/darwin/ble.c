@@ -45,8 +45,9 @@ int
 BLE_init(const uint8_t *profile, int ble_role)
 {
   current_role = ble_role;
-  if (ble_role == BLE_ROLE_PERIPHERAL) {
-    /* Parse the ATT-DB blob and build the CoreBluetooth GATT server. */
+  if (ble_role == BLE_ROLE_PERIPHERAL || ble_role == BLE_ROLE_BROADCASTER) {
+    /* Both roles advertise, which on CoreBluetooth means CBPeripheralManager.
+     * A broadcaster has no ATT database, so profile is NULL here. */
     pble_peripheral_init(profile);
   } else {
     pble_central_init((int32_t)ble_role);
@@ -59,7 +60,7 @@ void
 BLE_hci_power_control(uint8_t power_mode)
 {
   bool on = (power_mode == 1);  /* HCI_POWER_ON */
-  if (current_role == BLE_ROLE_PERIPHERAL) {
+  if (current_role == BLE_ROLE_PERIPHERAL || current_role == BLE_ROLE_BROADCASTER) {
     if (on) pble_peripheral_power_on(); else pble_peripheral_power_off();
   } else {
     if (on) pble_power_on(); else pble_power_off();

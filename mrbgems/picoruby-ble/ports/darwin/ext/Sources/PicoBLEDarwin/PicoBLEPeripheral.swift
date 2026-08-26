@@ -60,8 +60,9 @@ final class PBLEPeripheral: NSObject, CBPeripheralManagerDelegate, @unchecked Se
 
   /// Parse the BTstack ATT-DB blob (mrblib/ble_gatt_database.rb format) and build
   /// the CoreBluetooth service/characteristic objects. Called from BLE_init.
-  func setup(profile: UnsafePointer<UInt8>) {
-    parseProfile(profile)
+  /// A broadcaster passes no profile: it advertises with no GATT database at all.
+  func setup(profile: UnsafePointer<UInt8>?) {
+    if let profile { parseProfile(profile) }
     lock.lock()
     active = true
     lock.unlock()
@@ -268,6 +269,12 @@ final class PBLEPeripheral: NSObject, CBPeripheralManagerDelegate, @unchecked Se
   }
 
   // ---- CBPeripheralManagerDelegate (cbQueue) ----
+
+  /// Without this, CoreBluetooth rejecting the advertisement is indistinguishable
+  /// from a backend that never advertised at all.
+  func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
+    if let error { print("[ports/darwin] advertising rejected: \(error.localizedDescription)") }
+  }
 
   func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
     if peripheral.state == .poweredOn, powerRequested { addServicesIfNeeded() }
