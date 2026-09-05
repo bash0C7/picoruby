@@ -11,7 +11,10 @@ import PackageDescription
 // the dylib is linked with `-undefined dynamic_lookup` to leave them unresolved.
 let package = Package(
   name: "PicoBLEDarwin",
-  platforms: [.macOS(.v11), .iOS(.v13)],
+  // watchOS: centralロールのみ。CBPeripheralManager は watchOS で使えないため
+  // PicoBLEPeripheral.swift は #if !os(watchOS) で除外し、その C 向け export は
+  // no-op stub に落としてある（ble_peripheral.c が extern 参照を持つため）。
+  platforms: [.macOS(.v11), .iOS(.v13), .watchOS(.v6)],
   products: [
     .library(name: "PicoBLEDarwin", type: .dynamic, targets: ["PicoBLEDarwin"]),
   ],
