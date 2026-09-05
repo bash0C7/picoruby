@@ -1,3 +1,9 @@
+// CBPeripheralManager / CBMutableService / CBMutableCharacteristic は watchOS SDK が
+// API_UNAVAILABLE(watchos, tvos) と宣言している。watchOS はこのポートを central
+// ロールでしか使わないので、peripheral バックエンドごとコンパイル対象から外す。
+// C 側 ble_peripheral.c は watchOS でもアーカイブに入り pble_peripheral_* を extern
+// 参照するので、その export は PicoBLEExports.swift の no-op stub が受け持つ。
+#if !os(watchOS)
 import Foundation
 import CoreBluetooth
 import CBLEBridge
@@ -398,3 +404,4 @@ final class PBLEPeripheral: NSObject, CBPeripheralManagerDelegate, @unchecked Se
     return out
   }
 }
+#endif  // !os(watchOS)

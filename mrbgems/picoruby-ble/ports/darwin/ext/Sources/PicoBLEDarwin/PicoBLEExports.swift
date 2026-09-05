@@ -47,6 +47,13 @@
 }
 
 // ---- peripheral / broadcaster roles (ports/darwin/ble.c, ble_peripheral.c) ----
+//
+// watchOS には CBPeripheralManager が無いため PBLEPeripheral は存在しない
+// (PicoBLEPeripheral.swift 全体が #if !os(watchOS))。それでも ble_peripheral.c は
+// watchOS のアーカイブに入り、これらのシンボルを extern 参照する。export を消すと
+// アプリのリンクが未解決シンボルで壊れるので、watchOS では no-op stub を出す。
+
+#if !os(watchOS)
 
 /// `profile` is NULL for the broadcaster role, which advertises without a GATT database.
 @c public func pble_peripheral_init(_ profile: UnsafePointer<UInt8>?) {
@@ -81,3 +88,27 @@
   PBLEPeripheral.shared.pump()
   return pbleSharedFifo.drainInto(buf, Int(cap))
 }
+
+#else  // os(watchOS)
+
+@c public func pble_peripheral_init(_ profile: UnsafePointer<UInt8>?) {}
+
+@c public func pble_peripheral_power_on() {}
+
+@c public func pble_peripheral_power_off() {}
+
+@c public func pble_peripheral_advertise(_ data: UnsafePointer<UInt8>, _ size: UInt16) {}
+
+@c public func pble_peripheral_stop_advertise() {}
+
+@c public func pble_peripheral_notify(_ attHandle: UInt16, _ data: UnsafePointer<UInt8>, _ size: UInt16) {}
+
+@c public func pble_peripheral_request_can_send_now() {}
+
+/// watchOS: peripheral バックエンドが存在しないので pump() は無い。central の
+/// パケットを運ぶ FIFO の drain だけを行う。
+@c public func pble_drain_one(_ buf: UnsafeMutablePointer<UInt8>, _ cap: Int32) -> Int32 {
+  return pbleSharedFifo.drainInto(buf, Int(cap))
+}
+
+#endif  // !os(watchOS)
