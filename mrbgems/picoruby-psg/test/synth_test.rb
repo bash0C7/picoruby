@@ -415,8 +415,12 @@ class PSGSynthTest < Picotest::Test
     voice = @synth.allocator.voice_for(PSG::Synth::PROGRAM_CHANNEL, :test_timed.object_id, source: :game)
     assert @driver.calls.include?([:voice_write, voice, 100, 0, 15, 1])
 
-    sleep_ms 20
-
-    assert @driver.calls.include?([:voice_write, voice, 200, 0, 10, 1])
+    second_step = [:voice_write, voice, 200, 0, 10, 1]
+    # the synth task writes step 2 after 8 ms
+    20.times do
+      break if @driver.calls.include?(second_step)
+      sleep_ms 5
+    end
+    assert @driver.calls.include?(second_step)
   end
 end
