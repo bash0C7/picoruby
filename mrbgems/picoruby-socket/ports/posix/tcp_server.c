@@ -128,6 +128,11 @@ TCPServer_accept_nonblock(picorb_state *vm, picorb_tcp_server_t *server)
     return NULL;
   }
 
+  int client_flags = fcntl(client_fd, F_GETFL, 0);
+  if (client_flags != -1) {
+    fcntl(client_fd, F_SETFL, client_flags & ~O_NONBLOCK);
+  }
+
   /* Create TCPSocket object for client */
   picorb_socket_t *client = (picorb_socket_t *)picorb_alloc(vm, sizeof(picorb_socket_t));
   if (!client) {
