@@ -1,10 +1,4 @@
 require "gpio"
-begin
-  require "irq"
-rescue LoadError
-  # No picoruby-irq in this build (ESP32); the include below then
-  # falls back to a stub UART#irq that raises NotImplementedError.
-end
 
 class UART
   # Event bits for UART#irq, matching what the RX interrupt signals
@@ -16,11 +10,18 @@ class UART
   # The event-delivery protocol (see picoruby-irq's README): the
   # include provides UART#irq, and #event_source_id (defined in the
   # C glue when the build has the bridge) tells IRQ which source this
-  # object signals. rescue, not defined?: the ESP32 build carries no
-  # picoruby-irq, and mruby/c has no defined? for constants.
-  begin
-    include IRQ
-  rescue NameError
+  # object signals. extern returns nil when the build has no picoruby-irq
+  # (ESP32), where require would raise LoadError: a raise while the gem
+  # loads during mrb_open nests a second VM on the picoruby task stack.
+  irq_bridge = !extern("irq").nil?
+  if irq_bridge
+    begin
+      include IRQ
+    rescue NameError
+      irq_bridge = false
+    end
+  end
+  unless irq_bridge
     # No picoruby-irq in this build: give UART#irq the same visible
     # failure every other no-bridge path raises, instead of a
     # NoMethodError that looks like a typo.
