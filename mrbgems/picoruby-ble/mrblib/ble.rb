@@ -1,8 +1,5 @@
 require 'mbedtls'
-begin
-  require 'cyw43'
-rescue LoadError # Only LoadError should be rescued
-end
+extern('cyw43')
 
 class BLE
   HCI_STATE_OFF = 0
