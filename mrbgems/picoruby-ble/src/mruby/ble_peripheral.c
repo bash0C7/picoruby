@@ -33,12 +33,20 @@ mrb_request_can_send_now_event(mrb_state *mrb, mrb_value self)
   return mrb_fixnum_value(0);
 }
 
+static mrb_value
+mrb_disconnect(mrb_state *mrb, mrb_value self)
+{
+  BLE_peripheral_disconnect();
+  return mrb_fixnum_value(0);
+}
+
 void
 mrb_init_class_BLE_Peripheral(mrb_state *mrb, struct RClass *class_BLE)
 {
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(peripheral_advertise), mrb_advertise, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(notify), mrb_notify, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(request_can_send_now_event), mrb_request_can_send_now_event, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, class_BLE, MRB_SYM(disconnect), mrb_disconnect, MRB_ARGS_NONE());
 }
 
 

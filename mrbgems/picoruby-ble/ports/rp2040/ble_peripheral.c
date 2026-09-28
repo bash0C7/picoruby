@@ -50,3 +50,9 @@ BLE_peripheral_request_can_send_now_event(void)
   att_server_request_can_send_now_event(con_handle);
 }
 
+
+void
+BLE_peripheral_disconnect(void)
+{
+  gap_disconnect(con_handle);
+}

@@ -78,6 +78,13 @@ BLE_peripheral_notify(uint16_t att_handle)
 }
 
 void
+BLE_peripheral_disconnect(void)
+{
+  if (con_handle == 0xffff) return;
+  ble_gap_terminate(con_handle, BLE_ERR_REM_USER_CONN_TERM);
+}
+
+void
 BLE_peripheral_request_can_send_now_event(void)
 {
   uint8_t p[4] = { EVT_ATT_CAN_SEND_NOW, 2, 0, 0 };
