@@ -58,6 +58,10 @@ static uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static SemaphoreHandle_t sync_sem = NULL;
 static esp_timer_handle_t heartbeat_timer = NULL;
 static int heartbeat_depth = 0; // nest count: only the outermost disable actually stops it
+/* Set by the esp_timer task, taken by the VM thread's scheduler pump.
+ * The timer callback must not touch the VM heap (BLE_heartbeat pushes
+ * into a Task::Queue), so it only raises this flag. */
+static volatile bool heartbeat_pending = false;
 
 void
 picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, bool coalesce_adv)
@@ -175,11 +179,6 @@ picoruby_nimble_dequeue_event(uint8_t *out, uint16_t cap)
   memcpy(out, entry.data, entry.len);
   return entry.len;
 }
-
-/* Set by the esp_timer task, taken by the VM thread's scheduler pump.
- * The timer callback must not touch the VM heap (BLE_heartbeat pushes
- * into a Task::Queue), so it only raises this flag. */
-static volatile bool heartbeat_pending = false;
 
 static void
 heartbeat_timer_cb(void *arg)

@@ -7,6 +7,9 @@
 
 #ifdef PICORB_PLATFORM_ESP32
 #include "../../ports/esp32/nimble_owner.h"
+/* Spelled out: picoruby-mruby/include/hal.h shadows this one on the
+   include path (same workaround as picoruby-irq). */
+#include "../../../picoruby-machine/include/hal.h"
 #endif
 
 /*
@@ -56,19 +59,37 @@ BLE_heartbeat(void)
   }
 }
 
+#ifdef PICORB_PLATFORM_ESP32
+/* NimBLE fills a plain ring buffer from its own FreeRTOS task, and the
+ * heartbeat timer only raises a flag. Both cross into the GC heap here,
+ * on the VM thread, at every scheduler entry: the ring is drained as
+ * far as the pending-event budget allows (the rest stays in the ring
+ * for the next entry instead of being dropped), and the flag becomes
+ * BLE_heartbeat(). Registered through the scheduler-service layer —
+ * the raw hook slot belongs to picoruby-machine's dispatcher. */
+static void
+ble_scheduler_pump(mrb_state *mrb, void *ud)
+{
+  (void)mrb;
+  (void)ud;
+  if (_mrb == NULL || mrb_nil_p(event_queue)) return;
+  uint8_t buf[PICORUBY_NIMBLE_EVT_MAX];
+  uint16_t n;
+  while (pending_event_count < BLE_MAX_PENDING_EVENTS &&
+         (n = picoruby_nimble_dequeue_event(buf, sizeof(buf))) > 0) {
+    BLE_push_event(buf, n);
+  }
+  if (pending_event_count < BLE_MAX_PENDING_EVENTS &&
+      picoruby_nimble_take_heartbeat()) {
+    BLE_heartbeat();
+  }
+}
+#endif
+
 static mrb_value
 mrb_event_popped(mrb_state *mrb, mrb_value self)
 {
   if (0 < pending_event_count) pending_event_count--;
-#ifdef PICORB_PLATFORM_ESP32
-  /* NimBLE fills a plain ring buffer from its own FreeRTOS task. BLE_push_event
-   * touches the GC heap, so it must run here, on the thread owning mrb_state. */
-  {
-    uint8_t buf[PICORUBY_NIMBLE_EVT_MAX];
-    uint16_t n = picoruby_nimble_dequeue_event(buf, sizeof(buf));
-    if (n > 0) BLE_push_event(buf, n);
-  }
-#endif
   return mrb_nil_value();
 }
 
@@ -209,6 +230,9 @@ mrb__init(mrb_state *mrb, mrb_value self)
   write_values = new_write_values;
   read_values = new_read_values;
   pending_event_count = 0;
+#ifdef PICORB_PLATFORM_ESP32
+  picorb_scheduler_service_add(mrb, ble_scheduler_pump, NULL);
+#endif
 
   if (release_prev) {
     mrb_gc_unregister(mrb, prev_ble);
@@ -253,6 +277,9 @@ mrb_picoruby_ble_gem_init(mrb_state* mrb)
 void
 mrb_picoruby_ble_gem_final(mrb_state* mrb)
 {
+#ifdef PICORB_PLATFORM_ESP32
+  picorb_scheduler_service_remove(mrb, ble_scheduler_pump, NULL);
+#endif
   if (profile_buf) {
     mrb_free(mrb, profile_buf);
     profile_buf = NULL;
