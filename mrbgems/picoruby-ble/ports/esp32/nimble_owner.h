@@ -23,6 +23,8 @@ uint16_t picoruby_nimble_dequeue_event(uint8_t *out, uint16_t cap);
 int picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
 void picoruby_nimble_reset_writes(void);
 void picoruby_nimble_heartbeat_enable(bool enable);
+/* Read-and-clear the pending heartbeat flag; call from the VM thread only. */
+bool picoruby_nimble_take_heartbeat(void);
 
 #ifdef __cplusplus
 }
