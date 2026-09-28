@@ -12,6 +12,7 @@ void BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len, bool conn
 void BLE_peripheral_stop_advertise(void);
 void BLE_peripheral_notify(uint16_t att_handle);
 void BLE_peripheral_request_can_send_now_event(void);
+void BLE_peripheral_disconnect(void);
 
 #ifdef __cplusplus
 }

@@ -153,6 +153,7 @@ class BLE
     def notify: (Integer) -> 0
 
     def request_can_send_now_event: () -> 0
+    def disconnect: () -> 0
   # end
 
   # class Broadcaster < BLE
