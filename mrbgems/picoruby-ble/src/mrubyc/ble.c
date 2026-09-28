@@ -1,3 +1,13 @@
+#ifdef PICORB_PLATFORM_ESP32
+#include "../../ports/esp32/nimble_owner.h"
+/* Spelled out: picoruby-mruby/include/hal.h shadows this one on the
+   include path (same workaround as picoruby-irq). */
+#include "../../../picoruby-machine/include/hal.h"
+#if !defined(MRBC_TASK_SCHEDULER_HOOK)
+#error "picoruby-ble on the ESP32 mruby/c build needs MRBC_TASK_SCHEDULER_HOOK: the NimBLE event pump rides the scheduler-service layer"
+#endif
+#endif
+
 static mrbc_value write_values = {.tt = MRBC_TT_NIL};
 static mrbc_value read_values = {.tt = MRBC_TT_NIL};
 static mrbc_value event_queue = {.tt = MRBC_TT_NIL};
@@ -33,6 +43,30 @@ BLE_heartbeat(void)
     pending_event_count++;
   }
 }
+
+#ifdef PICORB_PLATFORM_ESP32
+/* NimBLE fills a plain ring buffer from its own FreeRTOS task, and the
+ * heartbeat timer only raises a flag. Both cross into the VM heap here,
+ * on the VM thread, at every scheduler entry — the mruby/c twin of the
+ * pump in src/mruby/ble.c. Without this, the mruby/c build had no
+ * dequeue at all and events never left the ring. */
+static void
+ble_scheduler_pump(void *ud)
+{
+  (void)ud;
+  if (event_queue.tt == MRBC_TT_NIL) return;
+  uint8_t buf[PICORUBY_NIMBLE_EVT_MAX];
+  uint16_t n;
+  while (pending_event_count < BLE_MAX_PENDING_EVENTS &&
+         (n = picoruby_nimble_dequeue_event(buf, sizeof(buf))) > 0) {
+    BLE_push_event(buf, n);
+  }
+  if (pending_event_count < BLE_MAX_PENDING_EVENTS &&
+      picoruby_nimble_take_heartbeat()) {
+    BLE_heartbeat();
+  }
+}
+#endif
 
 static void
 c_event_popped(mrbc_vm *vm, mrbc_value *v, int argc)
@@ -186,6 +220,12 @@ c__init(mrbc_vm *vm, mrbc_value *v, int argc)
   mrbc_decref(&prev_event_queue);
   mrbc_decref(&prev_write_values);
   mrbc_decref(&prev_read_values);
+#ifdef PICORB_PLATFORM_ESP32
+  /* Adding the same fn/ud twice is a no-op, so a re-init is safe. The
+   * hook is process-global and the VM lives until reset; there is no
+   * teardown to unregister from (same as picoruby-irq). */
+  picorb_scheduler_service_add(ble_scheduler_pump, NULL);
+#endif
 
   Machine_tud_task();
 }
