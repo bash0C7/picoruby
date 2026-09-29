@@ -31,6 +31,12 @@ class DecoderContractTest < Picotest::Test
   end
   def pkt(bytes); bytes.pack("C*"); end
 
+  # BTstack 1.6+ GATT event: [0]=type, [1]=len(total-2), [2..3]=con_handle,
+  # [4..5]=service_id, [6..7]=connection_id, [8..]=payload — the same
+  # 8-byte header Swift's gattEventHeader and ports/esp32's
+  # gatt_event_header emit; the decoder reads only type and payload.
+  def gatt(type, payload); pkt([type, 6 + payload.size, 0,0, 0,0,0,0] + payload); end
+
   def setup
     # GATT tree (pre-order DFS handles): service[1..6] uuid 0x180D >
     #   char A: start=2 value=3 end=4 props=READ uuid 0x2A37, value "hr!",
@@ -48,18 +54,18 @@ class DecoderContractTest < Picotest::Test
     @b = TBLE.new(:central)
     @b.goto_service_phase
     [
-      pkt([0xA1,0x01,0,0, 1,0, 6,0] + svc_uuid.bytes),                    # service result (1..6)
-      pkt([0xA0,0x01]),                                                   # service query complete -> discover chars
-      pkt([0xA2,0x01,0,0, 2,0, 3,0, 4,0, 0x02,0] + charA_uuid.bytes),     # char A result
-      pkt([0xA2,0x01,0,0, 5,0, 6,0, 6,0, 0x02,0] + charB_uuid.bytes),     # char B result
-      pkt([0xA0,0x01]),                                                   # char query complete -> read value 3
-      pkt([0xA5,0x01,0,0, 3,0, 3,0, 0x68,0x72,0x21]),                     # batched value handle 3 = "hr!" -> read 6
-      pkt([0xA5,0x01,0,0, 6,0, 2,0, 0x78,0x79]),                          # batched value handle 6 = "xy" (last)
-      pkt([0xA0,0x01]),                                                   # batched value complete -> discover descriptors (char A)
-      pkt([0xA4,0x01,0,0, 4,0] + desc_uuid.bytes),                        # descriptor result handle 4
-      pkt([0xA0,0x01]),                                                   # descriptor discovery complete -> read descriptor 4
-      pkt([0xA5,0x01,0,0, 4,0, 2,0, 0x63,0x63]),                          # batched descriptor value handle 4 = "cc" (last)
-      pkt([0xA0,0x01]),                                                   # batched descriptor-value complete -> TC_IDLE
+      gatt(0xA1, [1,0, 6,0] + svc_uuid.bytes),                  # service result (1..6)
+      gatt(0xA0, [0]),                                          # service query complete -> discover chars
+      gatt(0xA2, [2,0, 3,0, 4,0, 0x02,0] + charA_uuid.bytes),   # char A result
+      gatt(0xA2, [5,0, 6,0, 6,0, 0x02,0] + charB_uuid.bytes),   # char B result
+      gatt(0xA0, [0]),                                          # char query complete -> read value 3
+      gatt(0xA5, [3,0, 3,0, 0x68,0x72,0x21]),                   # batched value handle 3 = "hr!" -> read 6
+      gatt(0xA5, [6,0, 2,0, 0x78,0x79]),                        # batched value handle 6 = "xy" (last)
+      gatt(0xA0, [0]),                                          # batched value complete -> discover descriptors (char A)
+      gatt(0xA4, [4,0] + desc_uuid.bytes),                      # descriptor result handle 4
+      gatt(0xA0, [0]),                                          # descriptor discovery complete -> read descriptor 4
+      gatt(0xA5, [4,0, 2,0, 0x63,0x63]),                        # batched descriptor value handle 4 = "cc" (last)
+      gatt(0xA0, [0]),                                          # batched descriptor-value complete -> TC_IDLE
     ].each { |p| @b.packet_callback(p) }
   end
 
