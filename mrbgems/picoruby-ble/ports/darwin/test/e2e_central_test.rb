@@ -77,9 +77,11 @@ class E2ECentral < BLE
   def packet_callback(event_packet)
     super
     return unless event_packet.getbyte(0) == GATT_EVENT_NOTIFICATION
-    handle = Utils.little_endian_to_int16(event_packet.byteslice(4, 1))
-    len    = Utils.little_endian_to_int16(event_packet.byteslice(6, 1))
-    value  = event_packet.byteslice(8, len)
+    # BTstack 1.6+ layout: payload at GATT_EVENT_PAYLOAD_OFFSET(8) —
+    # value_handle(8..9), length(10..11), value(12..)
+    handle = Utils.little_endian_to_int16(event_packet.byteslice(8, 2))
+    len    = Utils.little_endian_to_int16(event_packet.byteslice(10, 2))
+    value  = event_packet.byteslice(12, len)
     @notified << [handle, value]
     STDOUT.puts "[notify-e2e] NOTIFY handle=#{handle} value=#{value.inspect}"
   end
