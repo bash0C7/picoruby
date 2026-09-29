@@ -176,9 +176,10 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         } else {
           // Non-readable characteristic: the decoder still reads every value handle.
           // Synthesize an empty value so the value worklist advances without waiting
-          // on a CB response that will never arrive (would stall the batched 0xA0).
+          // on a CB response that will never arrive. Every read ends with its own
+          // 0xA0: the 1.6+ decoder issues the NEXT read from QUERY_COMPLETE.
           push(pbleValueResult(valueHandle: handle, value: []))
-          if handle == maxCharValueHandle { push(pbleQueryComplete()) }
+          push(pbleQueryComplete())
         }
       } else if let d = readDescByHandle[handle] {
         peripheral?.readValue(for: d)
@@ -186,7 +187,7 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         // Synthetic CCCD has no CoreBluetooth descriptor to read; answer from the
         // last-written state so the decoder's descriptor-value phase advances.
         push(pbleValueResult(valueHandle: handle, value: cccdStateByHandle[handle] ?? [0x00, 0x00]))
-        if handle == maxDescriptorHandle { push(pbleQueryComplete()) }
+        push(pbleQueryComplete())
       } else {
         // Unknown handle: still terminate the phase so the FSM does not stall.
         push(pbleQueryComplete())
@@ -308,9 +309,10 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     let oid = ObjectIdentifier(characteristic)
     let vh = valueHandleForChar[oid] ?? 0
     if pendingReadChars.remove(oid) != nil {
-      // Response to an explicit read issued during eager discovery.
+      // Response to an explicit read issued during eager discovery. Every read
+      // ends with its own 0xA0 (the decoder chains the next read from there).
       push(pbleValueResult(valueHandle: vh, value: bytesOf(characteristic.value)))
-      if vh == maxCharValueHandle { push(pbleQueryComplete()) }
+      push(pbleQueryComplete())
     } else {
       // Unsolicited update from a subscribed characteristic = notification/indication.
       push(pbleNotification(valueHandle: vh, value: bytesOf(characteristic.value)))
@@ -320,7 +322,7 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor descriptor: CBDescriptor, error: Error?) {
     let h = handleForDesc[ObjectIdentifier(descriptor)] ?? 0
     push(pbleValueResult(valueHandle: h, value: bytesOfAny(descriptor.value)))
-    if h == maxDescriptorHandle { push(pbleQueryComplete()) }
+    push(pbleQueryComplete())
   }
 
   // ---- internals (cb queue only) ----

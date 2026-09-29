@@ -42,10 +42,9 @@ class DecoderContractTest < Picotest::Test
     #   char A: start=2 value=3 end=4 props=READ uuid 0x2A37, value "hr!",
     #           descriptor handle=4 uuid 0x2902 value "cc";
     #   char B: start=5 value=6 end=6 props=READ uuid 0x2A38, value "xy".
-    # The port batches reads of every readable value handle, emitting a single
-    # 0xA0 only after the LAST handle (max), so the decoder files every
-    # characteristic's value instead of dropping the 2nd+ when an early 0xA0
-    # ends the phase.
+    # Every read ends with its own 0xA0: the BTstack 1.6+ decoder issues the
+    # next read from the QUERY_COMPLETE branch, so the port answers each
+    # readValue with one 0xA5 + one 0xA0 (no batching).
     svc_uuid   = wire16(0x180D)
     charA_uuid = wire16(0x2A37)
     charB_uuid = wire16(0x2A38)
@@ -59,13 +58,14 @@ class DecoderContractTest < Picotest::Test
       gatt(0xA2, [2,0, 3,0, 4,0, 0x02,0] + charA_uuid.bytes),   # char A result
       gatt(0xA2, [5,0, 6,0, 6,0, 0x02,0] + charB_uuid.bytes),   # char B result
       gatt(0xA0, [0]),                                          # char query complete -> read value 3
-      gatt(0xA5, [3,0, 3,0, 0x68,0x72,0x21]),                   # batched value handle 3 = "hr!" -> read 6
-      gatt(0xA5, [6,0, 2,0, 0x78,0x79]),                        # batched value handle 6 = "xy" (last)
-      gatt(0xA0, [0]),                                          # batched value complete -> discover descriptors (char A)
+      gatt(0xA5, [3,0, 3,0, 0x68,0x72,0x21]),                   # value handle 3 = "hr!"
+      gatt(0xA0, [0]),                                          # read complete -> read value 6
+      gatt(0xA5, [6,0, 2,0, 0x78,0x79]),                        # value handle 6 = "xy"
+      gatt(0xA0, [0]),                                          # read complete -> discover descriptors (char A)
       gatt(0xA4, [4,0] + desc_uuid.bytes),                      # descriptor result handle 4
       gatt(0xA0, [0]),                                          # descriptor discovery complete -> read descriptor 4
-      gatt(0xA5, [4,0, 2,0, 0x63,0x63]),                        # batched descriptor value handle 4 = "cc" (last)
-      gatt(0xA0, [0]),                                          # batched descriptor-value complete -> TC_IDLE
+      gatt(0xA5, [4,0, 2,0, 0x63,0x63]),                        # descriptor value handle 4 = "cc"
+      gatt(0xA0, [0]),                                          # descriptor-value complete -> TC_IDLE
     ].each { |p| @b.packet_callback(p) }
   end
 
@@ -88,10 +88,8 @@ class DecoderContractTest < Picotest::Test
     )
   end
 
-  def test_service_uuid32_base_uuid_quirk
-    # uuid128_to_uuid32 does not recover the 16-bit alias (0x180D -> 0x0D180000);
-    # the 16-bit value lands in the high bytes of uuid32.
-    assert_equal(0x0D180000, @b.services[0][:uuid32])
+  def test_service_uuid32_recovers_16bit_alias
+    assert_equal(0x180D, @b.services[0][:uuid32])
   end
 
   def test_two_characteristics
@@ -126,8 +124,8 @@ class DecoderContractTest < Picotest::Test
     assert_equal(4, @b.services[0][:characteristics][0][:descriptors][0][:handle])
   end
 
-  def test_char_a_descriptor_uuid32_cccd_quirk
-    assert_equal(0x02290000, @b.services[0][:characteristics][0][:descriptors][0][:uuid32])
+  def test_char_a_descriptor_uuid32_cccd
+    assert_equal(0x2902, @b.services[0][:characteristics][0][:descriptors][0][:uuid32])
   end
 
   def test_char_a_descriptor_value_decoded
