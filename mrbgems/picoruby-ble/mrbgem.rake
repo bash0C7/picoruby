@@ -23,6 +23,11 @@ MRuby::Gem::Specification.new('picoruby-ble') do |spec|
            "--product", "PicoBLEDarwin",
            "-Xswiftc", "-emit-clang-header-path", "-Xswiftc", header) or
       raise "swift build (PicoBLEDarwin) failed"
+    # The swiftbuild backend (SwiftPM default since Swift 6.4) ignores
+    # -emit-clang-header-path and writes the header under .build/out.
+    generated = Dir.glob("#{ext_dir}/.build/out/**/GeneratedModuleMaps/PicoBLEDarwin-Swift.h").first
+    FileUtils.cp(generated, header) if generated
+    File.exist?(header) or raise "swift build (PicoBLEDarwin) produced no PicoBLEDarwin-Swift.h"
     spec.cc.include_paths << ext_dir
 
     lib_dir = "#{ext_dir}/.build/release"
