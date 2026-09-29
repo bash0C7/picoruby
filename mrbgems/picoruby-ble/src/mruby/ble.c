@@ -11,6 +11,9 @@
 /* Spelled out: picoruby-mruby/include/hal.h shadows this one on the
    include path (same workaround as picoruby-irq). */
 #include "../../../picoruby-machine/include/hal.h"
+#if !defined(MRB_USE_TASK_SCHEDULER)
+#error "picoruby-ble on ESP32 needs MRB_USE_TASK_SCHEDULER: the NimBLE event pump rides the scheduler-service layer"
+#endif
 #endif
 
 /*
@@ -90,7 +93,9 @@ static void
 ble_scheduler_pump(mrb_state *mrb, void *ud)
 {
   (void)ud;
-  if (_mrb == NULL || mrb_nil_p(event_queue)) return;
+  /* mrb != _mrb can only mean a second VM's scheduler is calling: the
+   * cached statics belong to _mrb, so do nothing for anyone else. */
+  if (_mrb == NULL || mrb != _mrb || mrb_nil_p(event_queue)) return;
   /* The hook runs at the top of the scheduler loop, outside any task's
    * protect frame: an exception escaping here (mrb_str_new can raise
    * NoMemoryError) would unwind the whole scheduler, not one task.
