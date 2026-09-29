@@ -30,10 +30,12 @@ module JS
     # Spawn a long-lived consumer task that drains one Task::Queue per callback.
     # The C dispatcher pushes events into the queue; the consumer calls the block.
     def self._spawn_event_consumer(callback_id, block)
-      q = Task::Queue.new
+      # `::` is required throughout JS::Object: it descends from BasicObject,
+      # so a bare constant is not looked up in Object.
+      q = ::Task::Queue.new
       EVENT_QUEUES[callback_id] = q
       CALLBACKS[callback_id]    = block
-      EVENT_TASKS[callback_id]  = Task.new(name: "js-cb-#{callback_id}") do
+      EVENT_TASKS[callback_id]  = ::Task.new(name: "js-cb-#{callback_id}") do
         while true
           ev = q.pop
           break if ev.nil?
@@ -65,9 +67,9 @@ module JS
     def addEventListener(event_type, sync: false, capture: false, once: false, passive: nil, &block)
       callback_id = block.object_id
       if sync
-        JS::Object::CALLBACKS[callback_id] = block
+        ::JS::Object::CALLBACKS[callback_id] = block
       else
-        JS::Object._spawn_event_consumer(callback_id, block)
+        ::JS::Object._spawn_event_consumer(callback_id, block)
       end
       _add_event_listener(callback_id, event_type, sync, capture, once,
                           passive.nil? ? -1 : (passive ? 1 : 0))
@@ -102,7 +104,7 @@ module JS
       begin
         # _removeEventListener is the C path; it works in Node too, unlike
         # the window-only _js_remove_event_listener_wrapper helper.
-        result = JS.global._removeEventListener(callback_id)
+        result = ::JS.global._removeEventListener(callback_id)
         _close_event_queue(callback_id) if result
         result
       rescue
@@ -111,29 +113,35 @@ module JS
       end
     end
 
+    # Raise the pending error stored by the C promise-error resume path for
+    # callback_id, if any, cleaning up both global hashes first.
+    def _raise_pending_promise_error(callback_id)
+      return unless $promise_errors.key?(callback_id)
+      message = $promise_errors[callback_id]
+      $promise_errors.delete(callback_id)
+      $promise_responses.delete(callback_id)
+      # Kernel.raise: self is a JS object (BasicObject), Kernel#raise is absent
+      ::Kernel.raise message
+    end
+
     def fetch(url, options = nil, &block)
       # Kernel.raise: self is a JS object (BasicObject), Kernel#raise is absent
-      Kernel.raise ArgumentError, "JS::Object#fetch requires a block: use `fetch(url) { |resp| ... }`" unless block
+      ::Kernel.raise ::ArgumentError, "JS::Object#fetch requires a block: use `fetch(url) { |resp| ... }`" unless block
       callback_id = block.object_id
       if options
-        options_json = JSON.generate(options)
+        options_json = ::JSON.generate(options)
         _fetch_with_options_and_suspend(url, options_json, callback_id)
       else
         _fetch_and_suspend(url, callback_id)
       end
-      if $promise_errors.key?(callback_id)
-        message = $promise_errors[callback_id]
-        $promise_errors.delete(callback_id)
-        $promise_responses.delete(callback_id)
-        Kernel.raise message
-      end
+      _raise_pending_promise_error(callback_id)
       block.call($promise_responses[callback_id])
       $promise_responses.delete(callback_id)
     end
 
     def setTimeout(delay_ms, &block)
       callback_id = block.object_id
-      JS::Object._spawn_event_consumer(callback_id, block)
+      ::JS::Object._spawn_event_consumer(callback_id, block)
       _set_timeout(callback_id, delay_ms)
       callback_id
     end
@@ -141,8 +149,20 @@ module JS
     def clearTimeout(callback_id)
       return false unless callback_id
       success = _clear_timeout(callback_id)
-      JS::Object._close_event_queue(callback_id) if success
+      ::JS::Object._close_event_queue(callback_id) if success
       success
+    end
+
+    # Read Blob, File, Response, or another object implementing arrayBuffer()
+    # as a binary Ruby String without UTF-8 conversion.
+    def to_binary
+      # __id__: BasicObject has no object_id
+      callback_id = self.__id__
+      _to_binary_and_suspend(callback_id)
+      _raise_pending_promise_error(callback_id)
+      result = $promise_responses[callback_id]
+      $promise_responses.delete(callback_id)
+      result.to_s
     end
 
   end
@@ -151,7 +171,7 @@ module JS
   # class based on the JS runtime type of the wrapped value.
 
   class Array < Object
-    include Enumerable
+    include ::Enumerable
 
     # Iterate over the wrapped JS array, yielding each element converted via
     # js_ref_to_ruby_value (primitives become Ruby native values).
@@ -179,16 +199,6 @@ module JS
   end
 
   class Response < Object
-    # Read the response body as a binary String. Suspends the current Ruby
-    # task until the underlying ArrayBuffer is materialized.
-    def to_binary
-      # __id__: BasicObject has no object_id
-      callback_id = self.__id__
-      _to_binary_and_suspend(callback_id)
-      result = $promise_responses[callback_id]
-      $promise_responses.delete(callback_id)
-      result.to_s
-    end
   end
 
   class Event < Object
@@ -208,12 +218,7 @@ module JS
       # __id__: BasicObject has no object_id
       callback_id = self.__id__
       _await_and_suspend(callback_id)
-      if $promise_errors.key?(callback_id)
-        message = $promise_errors[callback_id]
-        $promise_errors.delete(callback_id)
-        $promise_responses.delete(callback_id)
-        Kernel.raise message
-      end
+      _raise_pending_promise_error(callback_id)
       result = $promise_responses[callback_id]
       $promise_responses.delete(callback_id)
       result

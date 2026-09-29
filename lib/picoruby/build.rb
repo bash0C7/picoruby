@@ -8,6 +8,11 @@ module MRuby
     def build_mrbc_exec
       gem core: 'mruby-compiler' unless @gems['mruby-compiler']
       gem core: "mruby-bin-mrbc" unless @gems['mruby-bin-mrbc']
+      # MRuby.resolve_mrbc_hosts generates a bare MRuby::Build for a cross
+      # target's mrbc, which never goes through #common; mruby-compiler's
+      # headers include <mrbconf.h> from the mruby core in the submodule.
+      mruby_include = "#{MRUBY_ROOT}/mrbgems/picoruby-mruby/lib/mruby/include"
+      cc.include_paths << mruby_include unless cc.include_paths.include?(mruby_include)
       self.mrbcfile = "#{build_dir}/bin/mrbc"
       set_build_info
     end
@@ -38,6 +43,9 @@ module MRuby
     def common
       cc.include_paths << "#{MRUBY_ROOT}/mrbgems/mruby-compiler/include"
       cc.include_paths << "#{MRUBY_ROOT}/mrbgems/mruby-compiler/lib/prism/include"
+      # Prism's generated headers (ast.h, diagnostic.h) are written under
+      # build_root, not into the submodule, so every gem needs this path too.
+      cc.include_paths << "#{build_root}/prism/include"
       # Workaround: To avoid error in compiling gem_init.c
       cc.include_paths << "#{MRUBY_ROOT}/mrbgems/picoruby-mruby/lib/mruby/include"
       # Pass PICORUBY_VERSION to mruby-compiler
