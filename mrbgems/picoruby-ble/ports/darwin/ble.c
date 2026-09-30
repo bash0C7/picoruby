@@ -3,9 +3,11 @@
  * Swift backend (CBCentralManager). The 4 shared functions (BLE_push_event/
  * BLE_heartbeat/BLE_write_data/BLE_read_data) are defined in src/mruby/ble.c and
  * MUST NOT be redefined here; the synthesized packets reach BLE_push_event when
- * src/mruby/ble.c's mrb_event_popped drains the Swift FIFO (pble_drain_one) each tick. */
+ * src/mruby/ble.c's ble_scheduler_pump drains the Swift FIFO (pble_drain_one)
+ * on the VM thread at every scheduler entry. */
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <dispatch/dispatch.h>
 
@@ -24,10 +26,20 @@ static int current_role = BLE_ROLE_NONE;
 
 /* mrblib/ble.rb's run loop calls heartbeat_callback when @event_queue pops a
  * :heartbeat symbol, pushed only when a port calls BLE_heartbeat(). rp2040
- * drives that from a btstack timer and the esp32 port from an esp_timer, both
- * armed independently of the VM thread. CoreBluetooth itself has no such
- * timer, but GCD does: a dispatch source timer, armed once here, plays the
- * same role. */
+ * drives that from a btstack timer and the esp32 port from an esp_timer.
+ * CoreBluetooth itself has no such timer, but GCD does: a dispatch source
+ * timer, armed once here. Its handler runs on a GCD queue, never on the VM
+ * thread, so it only raises a flag; ble_scheduler_pump (src/mruby/ble.c)
+ * turns the flag into BLE_heartbeat() on the VM thread — same split as the
+ * esp32 port's esp_timer. */
+static atomic_bool heartbeat_pending;
+
+bool
+pble_take_heartbeat(void)
+{
+  return atomic_exchange(&heartbeat_pending, false);
+}
+
 static void
 start_heartbeat_timer(void)
 {
@@ -37,7 +49,7 @@ start_heartbeat_timer(void)
                                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
   dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
                              HEARTBEAT_PERIOD_MS * NSEC_PER_MSEC, 0);
-  dispatch_source_set_event_handler(timer, ^{ BLE_heartbeat(); });
+  dispatch_source_set_event_handler(timer, ^{ atomic_store(&heartbeat_pending, true); });
   dispatch_resume(timer);
 }
 

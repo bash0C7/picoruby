@@ -34,8 +34,8 @@ Characteristic values live in the generic mruby read/write tables (`BLE_read_dat
 callback runs on the `pble.cb.peri` queue — not the VM thread — the backend never
 calls those tables from a callback: a read is answered from a Swift-side cache, a
 write or subscribe is queued, and both the cache refresh and the queued writes are
-applied on the VM thread by `pump()` (driven from `pble_drain_one` each poll
-tick). This keeps the "mruby only on the VM thread" invariant the central path
+applied on the VM thread by `pump()` (driven from `pble_drain_one` at each
+scheduler entry). This keeps the "mruby only on the VM thread" invariant the central path
 relies on. These four peripheral events reach the Ruby `packet_callback`:
 
 | event | code | when |
@@ -68,13 +68,16 @@ Two threads, with all mruby access confined to the VM thread.
   single-slot mailbox in shared `src/mruby/ble.c` would otherwise overwrite.
   An oversize packet (larger than the drain buffer) is dropped and logged so
   it cannot wedge the FIFO head and stall every later packet.
-- **The VM thread** drains one packet per poll tick. The shared decoder's
-  `mrb_event_popped`, under `#ifdef PICORB_PLATFORM_DARWIN`, calls
-  `pble_drain_one` to copy one packet out and feeds it to `BLE_push_event`.
-  This is the only place `BLE_push_event` runs.
+- **The VM thread** drains the FIFO in `ble_scheduler_pump`
+  (`src/mruby/ble.c`), registered through the scheduler-service layer: at
+  every scheduler entry it calls `pble_drain_one` until the FIFO is empty
+  or the pending-event budget is reached, and feeds each packet to
+  `BLE_push_event`. This is the only place `BLE_push_event` runs. The GCD
+  heartbeat timer only raises a flag (`pble_take_heartbeat`); the pump
+  turns it into `BLE_heartbeat()` on the VM thread.
 - `mrblib/ble.rb` carries no Darwin-specific code and stays
   architecture-neutral. The only shared-code touch is the
-  `#ifdef PICORB_PLATFORM_DARWIN` drain hook in `src/mruby/ble.c`, following
+  `PICORB_PLATFORM_DARWIN` pump in `src/mruby/ble.c`, following
   the platform `#ifdef` convention used by other gems.
 - Commands issued from the VM thread (connect, scan, discover, read)
   dispatch the actual CoreBluetooth calls onto `pble.cb` so all
