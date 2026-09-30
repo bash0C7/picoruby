@@ -191,6 +191,9 @@ bool
 picoruby_nimble_take_heartbeat(void)
 {
   if (!heartbeat_pending) return false;
+  /* Deliberately lossy: a timer fire landing between the read and the
+   * clear coalesces into this beat. At 1 Hz against a scheduler-entry
+   * consumer that can never matter, and the next fire re-arms it. */
   heartbeat_pending = false;
   return true;
 }

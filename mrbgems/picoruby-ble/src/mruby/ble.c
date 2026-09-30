@@ -15,10 +15,14 @@
 #endif
 
 #ifdef PICORB_PLATFORM_ESP32
+#include "mruby/error.h" /* mrb_protect_error for the pump */
 #include "../../ports/esp32/nimble_owner.h"
 /* Spelled out: picoruby-mruby/include/hal.h shadows this one on the
    include path (same workaround as picoruby-irq). */
 #include "../../../picoruby-machine/include/hal.h"
+#if !defined(MRB_USE_TASK_SCHEDULER)
+#error "picoruby-ble on ESP32 needs MRB_USE_TASK_SCHEDULER: the NimBLE event pump rides the scheduler-service layer"
+#endif
 #endif
 
 /*
@@ -76,12 +80,11 @@ BLE_heartbeat(void)
  * for the next entry instead of being dropped), and the flag becomes
  * BLE_heartbeat(). Registered through the scheduler-service layer —
  * the raw hook slot belongs to picoruby-machine's dispatcher. */
-static void
-ble_scheduler_pump(mrb_state *mrb, void *ud)
+static mrb_value
+ble_pump_body(mrb_state *mrb, void *ud)
 {
   (void)mrb;
   (void)ud;
-  if (_mrb == NULL || mrb_nil_p(event_queue)) return;
   uint8_t buf[PICORUBY_NIMBLE_EVT_MAX];
   uint16_t n;
   while (pending_event_count < BLE_MAX_PENDING_EVENTS &&
@@ -92,6 +95,27 @@ ble_scheduler_pump(mrb_state *mrb, void *ud)
       picoruby_nimble_take_heartbeat()) {
     BLE_heartbeat();
   }
+  return mrb_nil_value();
+}
+
+static void
+ble_scheduler_pump(mrb_state *mrb, void *ud)
+{
+  (void)ud;
+  /* mrb != _mrb can only mean a second VM's scheduler is calling: the
+   * cached statics belong to _mrb, so do nothing for anyone else. */
+  if (_mrb == NULL || mrb != _mrb || mrb_nil_p(event_queue)) return;
+  /* The hook runs at the top of the scheduler loop, outside any task's
+   * protect frame: an exception escaping here (mrb_str_new can raise
+   * NoMemoryError) would unwind the whole scheduler, not one task.
+   * Contain it — the event being pushed is dropped, which is the same
+   * outcome the pending-event budget already allows. The arena
+   * save/restore pairs with mrb_protect_error rooting its result. */
+  mrb_bool error = FALSE;
+  int ai = mrb_gc_arena_save(mrb);
+  mrb_protect_error(mrb, ble_pump_body, NULL, &error);
+  mrb_gc_arena_restore(mrb, ai);
+  if (error) mrb->exc = NULL;
 }
 #endif
 
