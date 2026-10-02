@@ -180,6 +180,9 @@ end
 test = E2ECentralTest.new
 puts "E2ECentralTest"
 test.list_tests.reverse.each do |m|
+  # ONLY=<substring> runs a single test: the two tests need different peers
+  # (TARGET_NAME vs PROBE_TARGET_NAME), so against one peer the other fails.
+  next if ENV["ONLY"] && !m.to_s.include?(ENV["ONLY"].to_s)
   fresh = E2ECentralTest.new
   print "  #{m} "
   begin
