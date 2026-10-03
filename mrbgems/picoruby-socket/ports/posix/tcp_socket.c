@@ -26,6 +26,12 @@ TCPSocket_create(picorb_state *vm, picorb_socket_t *sock)
   if (sock->fd < 0) {
     return false;
   }
+#ifdef SO_NOSIGPIPE
+  /* BSD / Darwin (no MSG_NOSIGNAL): a send to a peer that hung up must fail
+   * with EPIPE, not raise SIGPIPE and kill a process that cannot trap it. */
+  int nosigpipe = 1;
+  setsockopt(sock->fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
 
   sock->family = AF_INET;
   sock->socktype = SOCK_STREAM;
