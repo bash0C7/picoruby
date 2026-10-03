@@ -47,6 +47,14 @@ TCPServer_create(picorb_state *vm, int port, int backlog)
     /* SO_REUSEPORT is optional, continue even if it fails */
   }
 #endif
+#ifdef SO_NOSIGPIPE
+  /* BSD / Darwin (no MSG_NOSIGNAL): a send to a peer that hung up must fail
+   * with EPIPE, not raise SIGPIPE and kill a process that cannot trap it.
+   * Set on the listening socket so every accepted socket inherits it: a
+   * peer may reset the connection before accept returns, and setsockopt on
+   * such a socket fails. */
+  setsockopt(server->listen_fd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
+#endif
 
   /* Bind to address */
   struct sockaddr_in addr = {0};
@@ -154,11 +162,6 @@ TCPServer_accept_nonblock(picorb_state *vm, picorb_tcp_server_t *server)
 #ifdef TCP_QUICKACK
   /* Linux: suppress delayed ACK so sender is not blocked waiting for ACK. */
   setsockopt(client_fd, IPPROTO_TCP, TCP_QUICKACK, &nodelay, sizeof(nodelay));
-#endif
-#ifdef SO_NOSIGPIPE
-  /* BSD / Darwin (no MSG_NOSIGNAL): a send to a peer that hung up must fail
-   * with EPIPE, not raise SIGPIPE and kill a process that cannot trap it. */
-  setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &nodelay, sizeof(nodelay));
 #endif
 
   return client;
