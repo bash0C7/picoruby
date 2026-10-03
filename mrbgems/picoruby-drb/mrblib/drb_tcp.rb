@@ -77,9 +77,15 @@ begin
           msg.send_reply(true, result)
 
         rescue => e
-          # Send error reply (convert exception to string for Marshal compatibility)
+          # Send error reply (convert exception to string for Marshal compatibility).
+          # A peer that hung up makes this send fail too; that client is gone and
+          # must not take the accept loop with it.
           error_msg = "#{e.class}: #{e.message}"
-          msg.send_reply(false, error_msg)
+          begin
+            msg.send_reply(false, error_msg)
+          rescue => reply_error
+            puts "DRb reply not delivered: #{reply_error.message}"
+          end
         ensure
           client.close
         end
