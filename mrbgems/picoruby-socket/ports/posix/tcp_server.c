@@ -155,6 +155,11 @@ TCPServer_accept_nonblock(picorb_state *vm, picorb_tcp_server_t *server)
   /* Linux: suppress delayed ACK so sender is not blocked waiting for ACK. */
   setsockopt(client_fd, IPPROTO_TCP, TCP_QUICKACK, &nodelay, sizeof(nodelay));
 #endif
+#ifdef SO_NOSIGPIPE
+  /* BSD / Darwin (no MSG_NOSIGNAL): a send to a peer that hung up must fail
+   * with EPIPE, not raise SIGPIPE and kill a process that cannot trap it. */
+  setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &nodelay, sizeof(nodelay));
+#endif
 
   return client;
 }
