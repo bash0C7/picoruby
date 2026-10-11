@@ -89,6 +89,21 @@ panics if a future change calls `BLE_read_data` / `BLE_write_data` /
 Tests is the only check that would catch a violation, and only if the
 offending path is actually exercised.
 
+## Central connection lifetime
+
+The central holds at most one peripheral, from `gap_connect` until it is given
+back. Unlike BTstack, `hci_power_control(OFF)` does not power the controller
+off, so the port enforces the lifetime itself:
+
+- Power-off cancels a connection that is still pending (CoreBluetooth's
+  `connect` never times out); an established link survives it, so a caller can
+  keep using the connection after `scan` returns.
+- Starting a scan cancels whatever peripheral the port still holds, pending or
+  connected, because the decoder starts every scan from "not connected".
+- Delegate callbacks act only for the held peripheral. A `didConnect` for a
+  peripheral that was given back is cancelled, and no disconnect packet is
+  emitted for a link the port itself gave back.
+
 ## Synthetic handle registry
 
 CoreBluetooth objects live on the Swift side, so the registry does too
@@ -150,6 +165,17 @@ GATT tree is reconstructed end-to-end.
 ```
 build/host/bin/picoruby \
   mrbgems/picoruby-ble/ports/darwin/test/decoder_contract_test.rb
+```
+
+### Central connection lifetime (no radio, runnable in CI)
+
+The decisions of "Central connection lifetime" live in `PeripheralLifetime`
+(`ext/Sources/PicoBLELifetime`), a CoreBluetooth-free target that
+`PicoBLEDarwin` depends on, so XCTest loads it without the dylib's unresolved
+C symbols. `PBLECentral` only performs what it answers.
+
+```
+swift test --package-path mrbgems/picoruby-ble/ports/darwin/ext
 ```
 
 ### E2E central (live radio, requires a 2nd device)
