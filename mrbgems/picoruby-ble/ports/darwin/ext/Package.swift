@@ -20,9 +20,17 @@ let package = Package(
   ],
   targets: [
     .target(name: "CBLEBridge", path: "Sources/CBLEBridge"),
+    // Pure connection-lifetime decisions with no CoreBluetooth and no unresolved
+    // C symbols, so `swift test` can load it on the host.
+    .target(name: "PicoBLELifetime", path: "Sources/PicoBLELifetime"),
+    .testTarget(
+      name: "PicoBLELifetimeTests",
+      dependencies: ["PicoBLELifetime"],
+      path: "Tests/PicoBLELifetimeTests"
+    ),
     .target(
       name: "PicoBLEDarwin",
-      dependencies: ["CBLEBridge"],
+      dependencies: ["CBLEBridge", "PicoBLELifetime"],
       path: "Sources/PicoBLEDarwin",
       linkerSettings: [
         .unsafeFlags(["-Xlinker", "-undefined", "-Xlinker", "dynamic_lookup"]),

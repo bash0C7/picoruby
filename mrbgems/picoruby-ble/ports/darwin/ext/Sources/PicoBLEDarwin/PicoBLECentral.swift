@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import PicoBLELifetime
 
 // CoreBluetooth central backend for picoruby-ble (central/observer v1). All
 // CBCentralManager/CBPeripheral delegate callbacks and all command entry points
@@ -63,7 +64,10 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   private var peripheralsByConnectKey: [[UInt8]: CBPeripheral] = [:]
 
   // The single connected peripheral and its synthetic GATT tree (v1: one connection).
-  private var peripheral: CBPeripheral?
+  // `lifetime` holds the peripheral from connect() on and decides what to give back;
+  // delegate callbacks act only for the peripheral held there.
+  private var lifetime = PeripheralLifetime<CBPeripheral>()
+  private var peripheral: CBPeripheral? { lifetime.held }
   private var connHandle: UInt16 = 0x0040
   private var services: [PBLESvcNode] = []
   private var svcByStart: [UInt8: PBLESvcNode] = [:]
@@ -105,17 +109,21 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   }
 
   func powerOff() {
-    // hci_power_control(OFF) runs in every start()'s ensure; only stop scanning.
-    // Do NOT drop an established connection, or connect()'s nested start(10) and
-    // any later discovery loop would lose the peripheral.
+    // hci_power_control(OFF) runs in every start()'s ensure. It stops scanning and
+    // cancels a connection that is still pending: CoreBluetooth's connect never
+    // times out, so a decoder that gave up would otherwise be connected later by
+    // the OS without knowing it. An established connection is kept, or a caller
+    // using the link after scan returns would lose the peripheral.
     cbQueue.async { [self] in
       powerRequested = false   // so a late didUpdateState after stop cannot emit WORKING
       manager?.stopScan()
+      if let p = lifetime.giveBackAtPowerOff() { cancel(p) }
     }
   }
 
   func startScan() {
     cbQueue.async { [self] in
+      if let p = lifetime.giveBackAtScanStart() { cancel(p) }   // the decoder starts every scan from "not connected"
       peripheralsByConnectKey.removeAll()
       pbleSharedFifo.flush()
       scanning = true
@@ -140,7 +148,7 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     return cbQueue.sync { [self] in
       guard let p = peripheralsByConnectKey[key] else { return Int32(1) }
       manager?.stopScan()
-      peripheral = p
+      lifetime.hold(p)
       p.delegate = self
       manager?.connect(p, options: nil)
       return Int32(0)
@@ -250,17 +258,30 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-    self.peripheral = peripheral
-    peripheral.delegate = self
-    push(pbleConnComplete(connHandle))
+    switch lifetime.connectCompleted(peripheral) {
+    case .adopt:
+      push(pbleConnComplete(connHandle))
+    case .cancelStranger:
+      central.cancelPeripheralConnection(peripheral)   // connected after we gave it back
+    }
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-    connectionLost()
+    if lifetime.lost(peripheral) { connectionLost() }
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-    connectionLost()
+    if lifetime.lost(peripheral) { connectionLost() }
+  }
+
+  /// Cancel a peripheral `lifetime` gave back. The decoder already treats the link as
+  /// gone, so no disconnect packet is pushed: a late one would read as the loss of the
+  /// next connection. `lifetime` no longer holds it, so every later callback for it is
+  /// a no-op.
+  private func cancel(_ p: CBPeripheral) {
+    p.delegate = nil
+    resetTree()
+    manager?.cancelPeripheralConnection(p)
   }
 
   /// Connection gone: emit the disconnect packet AND a terminating query-complete
@@ -271,7 +292,6 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     push(pbleDisconnect())
     push(pbleQueryComplete())
     resetTree()
-    peripheral = nil
   }
 
   // ---- CBPeripheralDelegate (eager discovery) ----
