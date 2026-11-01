@@ -35,7 +35,12 @@ static const char *BLE_TAG = "prb_ble_evq";
 #define EVT_GATT_NOTIFICATION 0xA7
 #define EVT_GATT_INDICATION 0xA8
 
+#define HCI_STATE_OFF 0
+#define HCI_STATE_INITIALIZING 1
 #define HCI_STATE_WORKING 2
+#define HCI_STATE_HALTING 3
+#define HCI_STATE_SLEEPING 4
+#define HCI_STATE_FALLING_ASLEEP 5
 
 #define ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER 0x02
 #define ERROR_CODE_MEMORY_CAPACITY_EXCEEDED 0x07
@@ -77,8 +82,8 @@ static const char *BLE_TAG = "prb_ble_evq";
 #define RDM_MAX PICORUBY_BLE_READ_MIRROR_MAX
 
 static enum BLE_role_t role = BLE_ROLE_NONE;
-// VM側のON要求を記録する。NimBLE/controllerの実稼働状態ではない。
 static bool power_on_requested = false;
+static uint8_t power_state = HCI_STATE_OFF;
 static uint8_t central_connect_event[21];
 static uintptr_t central_connect_token;
 static uintptr_t central_connect_serial;
@@ -704,6 +709,8 @@ register_services(void)
   // setup runs after SDK init has discarded the previous GATT procedures.
   reset_characteristic_discoveries();
   picoruby_ble_central_reset_request();
+  picoruby_ble_central_scan_reset();
+  power_state = HCI_STATE_OFF;
   if (!have_services) return 0;
   int rc = ble_gatts_count_cfg(svc_defs);
   if (rc == 0) rc = ble_gatts_add_svcs(svc_defs);
@@ -720,10 +727,22 @@ enqueue_control_event(const uint8_t *pkt, uint16_t len)
 }
 
 static void
-picoruby_ble_synth_state_working(void)
+synth_state(uint8_t state)
 {
-  uint8_t p[3] = { EVT_BTSTACK_STATE, 1, HCI_STATE_WORKING };
+  uint8_t p[3] = { EVT_BTSTACK_STATE, 1, state };
   enqueue_control_event(p, sizeof(p));
+}
+
+bool
+picoruby_ble_power_working(void)
+{
+  return power_state == HCI_STATE_WORKING;
+}
+
+bool
+picoruby_ble_role_peripheral(void)
+{
+  return role == BLE_ROLE_PERIPHERAL;
 }
 
 static void
@@ -752,22 +771,21 @@ status_to_u8(uint16_t status)
 }
 
 static void
-build_le_connection_complete(uint8_t *p, uint16_t handle, uint8_t status)
+build_le_connection_complete(uint8_t *p, uint16_t handle, uint8_t status, const struct ble_gap_conn_desc *desc)
 {
-  struct ble_gap_conn_desc desc;
   memset(p, 0, 21);
   p[0] = EVT_LE_META;
   p[1] = 19;
   p[2] = 0x01;
   p[3] = status;
   put_le16(p + 4, handle);
-  if (status == 0 && ble_gap_conn_find(handle, &desc) == 0) {
-    p[6] = (desc.role == BLE_GAP_ROLE_MASTER) ? 0 : 1;
-    p[7] = desc.peer_id_addr.type;
-    memcpy(p + 8, desc.peer_id_addr.val, 6);
-    put_le16(p + 14, desc.conn_itvl);
-    put_le16(p + 16, desc.conn_latency);
-    put_le16(p + 18, desc.supervision_timeout);
+  if (desc != NULL) {
+    p[6] = (desc->role == BLE_GAP_ROLE_MASTER) ? 0 : 1;
+    p[7] = desc->peer_id_addr.type;
+    memcpy(p + 8, desc->peer_id_addr.val, 6);
+    put_le16(p + 14, desc->conn_itvl);
+    put_le16(p + 16, desc->conn_latency);
+    put_le16(p + 18, desc->supervision_timeout);
   }
 }
 
@@ -775,7 +793,7 @@ static void
 synth_le_connection_complete(uint16_t handle, uint8_t status)
 {
   uint8_t p[21];
-  build_le_connection_complete(p, handle, status);
+  build_le_connection_complete(p, handle, status, NULL);
   enqueue_control_event(p, sizeof(p));
 }
 
@@ -837,7 +855,9 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
   if (!picoruby_ble_connection_gate_enter()) return 0;
   switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
-      if (event->connect.status == 0) {
+      if (event->connect.status == 0 ||
+          (role == BLE_ROLE_PERIPHERAL && event->connect.status != BLE_HS_EAGAIN &&
+           ble_gap_conn_find(event->connect.conn_handle, NULL) == 0)) {
         if (!picoruby_ble_connection_claim(event->connect.conn_handle)) {
           /* The SDK can admit more peers than this public adapter supports. */
           int rc = ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -849,7 +869,9 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         }
         picoruby_ble_central_reset_request();
         if (role == BLE_ROLE_CENTRAL) {
-          build_le_connection_complete(central_connect_event, event->connect.conn_handle, 0);
+          struct ble_gap_conn_desc desc;
+          build_le_connection_complete(central_connect_event, event->connect.conn_handle, 0,
+                                       ble_gap_conn_find(event->connect.conn_handle, &desc) == 0 ? &desc : NULL);
           central_connect_token = ++central_connect_serial;
           if (ble_gattc_exchange_mtu(event->connect.conn_handle, central_mtu_cb, (void *)central_connect_token) != 0) {
             central_connect_token = 0;
@@ -858,14 +880,32 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         }
       } else if (role == BLE_ROLE_CENTRAL) {
         picoruby_ble_connection_end_connect();
-        uint8_t status = (uint8_t)event->connect.status;
-        synth_le_connection_complete(0, status ? status : 0xff);
-      } else if (role == BLE_ROLE_PERIPHERAL || role == BLE_ROLE_BROADCASTER) {
+        if (event->connect.status == BLE_HS_EAPP) {
+          synth_disconnection_complete(0xffff, BLE_ERR_CONN_TERM_LOCAL);
+        } else {
+          uint8_t status = (uint8_t)event->connect.status;
+          synth_le_connection_complete(0, status ? status : 0xff);
+        }
+      } else if (role == BLE_ROLE_PERIPHERAL) {
+        if (event->connect.status == BLE_HS_EAGAIN) {
+          synth_disconnection_complete(event->connect.conn_handle, BLE_ERR_CONN_ESTABLISHMENT);
+        }
+        picoruby_ble_peripheral_rearm_adv();
+      } else if (role == BLE_ROLE_BROADCASTER) {
         picoruby_ble_peripheral_rearm_adv();
       }
       break;
     case BLE_GAP_EVENT_DISCONNECT:
-      if (!picoruby_ble_connection_release(event->disconnect.conn.conn_handle)) break;
+      if (!picoruby_ble_connection_release(event->disconnect.conn.conn_handle)) {
+        if (role == BLE_ROLE_CENTRAL && picoruby_ble_central_connect_lost(&event->disconnect.conn)) {
+          uint8_t p[21];
+          build_le_connection_complete(p, event->disconnect.conn.conn_handle, 0, &event->disconnect.conn);
+          enqueue_control_event(p, sizeof(p));
+          synth_disconnection_complete(event->disconnect.conn.conn_handle,
+                                       (uint8_t)event->disconnect.reason);
+        }
+        break;
+      }
       picoruby_ble_central_reset_request();
       if (role == BLE_ROLE_PERIPHERAL || role == BLE_ROLE_CENTRAL) {
         synth_disconnection_complete(event->disconnect.conn.conn_handle,
@@ -931,25 +971,46 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
   return 0;
 }
 
-/* The owning host loop calls this before releasing the gate after every
- * event. SDK internal retry paths can delete a connection without delivering
- * an application DISCONNECT. Missing SDK state is a fact; its HCI cause is
- * not inferred, so the synthesized reason is explicitly unspecified. */
+static void
+power_set_heartbeat(bool on)
+{
+  if (power_on_requested == on) return;
+  power_on_requested = on;
+  picoruby_nimble_heartbeat_enable(on);
+}
+
+static void
+power_terminate_connection(void)
+{
+  central_connect_token = 0;
+  uint16_t handle = picoruby_ble_connection_handle_snapshot();
+  if (handle == 0xffff) return;
+  int rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+  if (rc != 0 && rc != BLE_HS_EALREADY) {
+    ESP_LOGE(BLE_TAG, "connection termination failed: %d", rc);
+    picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
+  }
+}
+
+static void
+power_halting_step(void)
+{
+  if (power_state != HCI_STATE_HALTING) return;
+  power_terminate_connection();
+  if (picoruby_ble_connection_handle_snapshot() != 0xffff) return;
+  if (picoruby_ble_connection_connect_pending()) return;
+  power_state = HCI_STATE_OFF;
+  synth_state(HCI_STATE_OFF);
+}
+
 void
 picoruby_ble_reconcile_connections(void)
 {
-  uint16_t handle = picoruby_ble_connection_handle_snapshot();
-  if (handle != 0xffff && ble_gap_conn_find(handle, NULL) == BLE_HS_ENOTCONN &&
-      picoruby_ble_connection_release(handle)) {
-    picoruby_ble_central_reset_request();
-    synth_disconnection_complete(handle, BLE_ERR_UNSPECIFIED);
-    picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
-    if (role == BLE_ROLE_PERIPHERAL) picoruby_ble_peripheral_rearm_adv();
-  }
   if (role == BLE_ROLE_CENTRAL && picoruby_ble_central_reconcile_connect()) {
     synth_le_connection_complete(0, status_to_u8(BLE_HS_ENOTCONN));
     picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
   }
+  power_halting_step();
 }
 
 int
@@ -986,45 +1047,95 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   return picoruby_nimble_start(register_services);
 }
 
+static void
+power_suspend_requests(void)
+{
+  switch (role) {
+    case BLE_ROLE_PERIPHERAL:
+    case BLE_ROLE_BROADCASTER:
+      picoruby_ble_peripheral_suspend_adv();
+      break;
+    case BLE_ROLE_CENTRAL:
+    case BLE_ROLE_OBSERVER:
+      picoruby_ble_central_suspend_scan();
+      break;
+    default:
+      break;
+  }
+}
+
+static void
+power_resume_requests(void)
+{
+  switch (role) {
+    case BLE_ROLE_PERIPHERAL:
+    case BLE_ROLE_BROADCASTER:
+      picoruby_ble_peripheral_resume_adv();
+      break;
+    case BLE_ROLE_CENTRAL:
+    case BLE_ROLE_OBSERVER:
+      picoruby_ble_central_resume_scan();
+      break;
+    default:
+      break;
+  }
+}
+
 int
 BLE_hci_power_control(uint8_t power_mode)
 {
-  switch (power_mode) {
-    case 0: /* HCI_POWER_OFF */
-    case 1: /* HCI_POWER_ON */
-      break;
-    case 2: /* HCI_POWER_SLEEP */
-      return BLE_POWER_CONTROL_UNSUPPORTED;
-    default:
-      return BLE_POWER_CONTROL_INVALID;
-  }
+  if (power_mode > 2) return BLE_POWER_CONTROL_INVALID;
   if (!picoruby_nimble_ready() && (power_mode != 0 || !picoruby_nimble_started())) {
+    power_state = HCI_STATE_OFF;
     power_on_requested = false;
     picoruby_nimble_heartbeat_enable(false);
     return power_mode == 0 ? 0 : BLE_POWER_CONTROL_NOT_READY;
   }
-  if (power_mode == 1) {
-    if (!power_on_requested) {
-      picoruby_nimble_heartbeat_enable(true);
-      power_on_requested = true;
-    }
-    picoruby_ble_synth_state_working();
-  } else {
-    power_on_requested = false;
-    picoruby_nimble_heartbeat_enable(false);
-    switch (role) {
-      case BLE_ROLE_PERIPHERAL:
-      case BLE_ROLE_BROADCASTER:
-        BLE_peripheral_stop_advertise();
+  if (!picoruby_ble_connection_gate_enter()) return -1;
+  switch (power_mode) {
+    case 1:
+      if (power_state == HCI_STATE_WORKING) {
+        synth_state(HCI_STATE_WORKING);
         break;
-      case BLE_ROLE_CENTRAL:
-      case BLE_ROLE_OBSERVER:
-        ble_gap_disc_cancel();
+      }
+      synth_state(HCI_STATE_INITIALIZING);
+      power_state = HCI_STATE_WORKING;
+      power_set_heartbeat(true);
+      synth_state(HCI_STATE_WORKING);
+      power_resume_requests();
+      break;
+    case 0:
+      if (power_state == HCI_STATE_OFF || power_state == HCI_STATE_HALTING) {
+        synth_state(power_state);
         break;
-      default:
+      }
+      power_set_heartbeat(false);
+      power_state = HCI_STATE_HALTING;
+      synth_state(HCI_STATE_HALTING);
+      power_suspend_requests();
+      if (picoruby_ble_connection_connect_pending()) {
+        int rc = ble_gap_conn_cancel();
+        if (rc != 0 && rc != BLE_HS_EALREADY) {
+          ESP_LOGE(BLE_TAG, "connect cancel failed: %d", rc);
+          picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
+        }
+      }
+      power_halting_step();
+      break;
+    case 2:
+      if (power_state == HCI_STATE_OFF || power_state == HCI_STATE_SLEEPING) {
+        synth_state(power_state);
         break;
-    }
+      }
+      power_set_heartbeat(false);
+      power_state = HCI_STATE_FALLING_ASLEEP;
+      synth_state(HCI_STATE_FALLING_ASLEEP);
+      power_terminate_connection();
+      power_state = HCI_STATE_SLEEPING;
+      synth_state(HCI_STATE_SLEEPING);
+      break;
   }
+  picoruby_ble_connection_gate_exit();
   return 0;
 }
 

@@ -41,17 +41,54 @@ BLE_central_set_scan_params(uint8_t scan_type, uint16_t scan_interval, uint16_t 
   scan_params.filter_duplicates = 0;
 }
 
-int
-BLE_central_start_scan(void)
+static bool scan_wanted;
+
+static int
+scan_start(void)
 {
   return ble_gap_disc(picoruby_nimble_own_addr_type(), BLE_HS_FOREVER,
                &scan_params, picoruby_ble_gap_event, NULL);
 }
 
 int
+BLE_central_start_scan(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return -1;
+  scan_wanted = true;
+  int rc = 0;
+  if (picoruby_ble_power_working()) {
+    rc = scan_start();
+    if (rc == BLE_HS_EALREADY && ble_gap_disc_active()) rc = 0;
+  }
+  picoruby_ble_connection_gate_exit();
+  return rc;
+}
+
+int
 BLE_central_stop_scan(void)
 {
+  scan_wanted = false;
   return ble_gap_disc_cancel();
+}
+
+void
+picoruby_ble_central_scan_reset(void)
+{
+  scan_wanted = false;
+}
+
+void
+picoruby_ble_central_suspend_scan(void)
+{
+  ble_gap_disc_cancel();
+}
+
+void
+picoruby_ble_central_resume_scan(void)
+{
+  if (!scan_wanted || picoruby_ble_connection_connect_pending()) return;
+  ble_gap_disc_cancel();
+  scan_start();
 }
 
 uint8_t
@@ -103,6 +140,16 @@ picoruby_ble_central_reconcile_connect(void)
 {
   if (!picoruby_ble_connection_connect_pending() || ble_gap_conn_active()) return false;
   if (ble_gap_conn_find_by_addr(&central_connect_peer, NULL) != BLE_HS_ENOTCONN) return false;
+  picoruby_ble_connection_end_connect();
+  return true;
+}
+
+bool
+picoruby_ble_central_connect_lost(const struct ble_gap_conn_desc *conn)
+{
+  if (!picoruby_ble_connection_connect_pending()) return false;
+  if (ble_addr_cmp(&central_connect_peer, &conn->peer_ota_addr) != 0 &&
+      ble_addr_cmp(&central_connect_peer, &conn->peer_id_addr) != 0) return false;
   picoruby_ble_connection_end_connect();
   return true;
 }

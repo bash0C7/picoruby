@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 struct ble_gap_event;
+struct ble_gap_conn_desc;
 struct ble_gatt_register_ctxt;
 
 #ifdef __cplusplus
@@ -27,6 +28,12 @@ void picoruby_ble_connection_reopen(void);
 /* Caller owns the gate for one complete SDK host event plus reconciliation. */
 void picoruby_ble_reconcile_connections(void);
 bool picoruby_ble_central_reconcile_connect(void);
+bool picoruby_ble_central_connect_lost(const struct ble_gap_conn_desc *conn);
+void picoruby_ble_central_scan_reset(void);
+void picoruby_ble_central_suspend_scan(void);
+void picoruby_ble_central_resume_scan(void);
+bool picoruby_ble_power_working(void);
+bool picoruby_ble_role_peripheral(void);
 uint16_t picoruby_ble_connection_handle_snapshot(void);
 /* Caller owns the connection gate, or SDK init has discarded old procedures. */
 void picoruby_ble_central_reset_request(void);
@@ -43,6 +50,8 @@ void picoruby_ble_publish_read_value(uint16_t ruby_handle, const uint8_t *data, 
 void picoruby_ble_refresh_read_mirrors(void);
 int picoruby_ble_peripheral_setup(void);
 void picoruby_ble_peripheral_rearm_adv(void);
+void picoruby_ble_peripheral_suspend_adv(void);
+void picoruby_ble_peripheral_resume_adv(void);
 void picoruby_ble_peripheral_service_send_permit(void);
 
 // SDK operation failure snapshot: little-endian count:u32, last_rc:i32, stage:u8, flags:u8.

@@ -188,8 +188,7 @@ picoruby_ble_peripheral_service_send_permit(void)
     picoruby_ble_connection_gate_exit();
     return;
   }
-  uint8_t p[4] = { EVT_ATT_CAN_SEND_NOW, 2,
-                 send_permit_handle & 0xff, send_permit_handle >> 8 };
+  uint8_t p[2] = { EVT_ATT_CAN_SEND_NOW, 0 };
   int result = picoruby_nimble_enqueue_event(p, sizeof(p), PICORUBY_NIMBLE_EVENT_CONTROL);
   cancel_send_permit();
   os_mbuf_free_chain(probe);
@@ -264,11 +263,17 @@ picoruby_ble_peripheral_setup(void)
   return 0;
 }
 
+static bool
+adv_deferred(void)
+{
+  return !picoruby_ble_power_working() || con_handle != 0xffff;
+}
+
 static int
 adv_start(void)
 {
   if (!picoruby_nimble_ready()) return -1;
-  if (adv_connectable && !picoruby_ble_connection_available()) return BLE_HS_EBUSY;
+  if (adv_deferred()) return 0;
   struct ble_gap_adv_params params;
   memset(&params, 0, sizeof(params));
   params.conn_mode = adv_connectable ? BLE_GAP_CONN_MODE_UND : BLE_GAP_CONN_MODE_NON;
@@ -286,15 +291,20 @@ adv_start(void)
   return rc;
 }
 
+static void
+adv_stop_sdk(void)
+{
+  int rc = ble_gap_adv_stop();
+  if (rc != 0 && rc != BLE_HS_EALREADY) {
+    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_STOP);
+  }
+}
+
 int
 BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len_in, bool connectable)
 {
   if (adv_data_len_in > sizeof(adv_data_buf)) return -1;
   if (!picoruby_ble_connection_gate_enter()) return -1;
-  if (connectable && !picoruby_ble_connection_available()) {
-    picoruby_ble_connection_gate_exit();
-    return BLE_HS_EBUSY;
-  }
   if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
     picoruby_ble_connection_gate_exit();
     return -1;
@@ -303,11 +313,11 @@ BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len_in, bool connec
   adv_data_len = adv_data_len_in;
   adv_connectable = connectable;
   adv_wanted = true;
-  int rc = ble_gap_adv_stop();
-  if (rc != 0 && rc != BLE_HS_EALREADY) {
-    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_STOP);
+  int rc = 0;
+  if (!adv_deferred()) {
+    adv_stop_sdk();
+    rc = adv_start();
   }
-  rc = adv_start();
   xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
   return rc;
@@ -322,10 +332,7 @@ BLE_peripheral_stop_advertise(void)
     return;
   }
   adv_wanted = false;
-  int rc = ble_gap_adv_stop();
-  if (rc != 0 && rc != BLE_HS_EALREADY) {
-    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_STOP);
-  }
+  adv_stop_sdk();
   xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
 }
@@ -339,6 +346,35 @@ picoruby_ble_peripheral_rearm_adv(void)
     return;
   }
   if (adv_wanted && !ble_gap_adv_active()) adv_start();
+  xSemaphoreGive(adv_mutex);
+  picoruby_ble_connection_gate_exit();
+}
+
+void
+picoruby_ble_peripheral_suspend_adv(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return;
+  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
+  adv_stop_sdk();
+  xSemaphoreGive(adv_mutex);
+  picoruby_ble_connection_gate_exit();
+}
+
+void
+picoruby_ble_peripheral_resume_adv(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return;
+  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
+  if (adv_wanted) {
+    adv_stop_sdk();
+    adv_start();
+  }
   xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
 }
@@ -373,6 +409,10 @@ void
 BLE_peripheral_request_can_send_now_event(void)
 {
   if (!picoruby_ble_connection_gate_enter()) return;
+  if (!picoruby_ble_role_peripheral()) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
   uint16_t handle = picoruby_ble_connection_handle_snapshot();
   if (!picoruby_ble_connection_matches(handle)) {
     picoruby_ble_connection_gate_exit();
