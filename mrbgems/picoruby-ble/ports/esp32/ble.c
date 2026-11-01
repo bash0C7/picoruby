@@ -171,6 +171,7 @@ find_map_by_nimble(uint16_t nimble_handle)
 static uint8_t att_security_status(uint16_t flags, bool is_read, uint16_t conn);
 
 static uint16_t terminating_handle[MYNEWT_VAL(BLE_MAX_CONNECTIONS)];
+static bool terminating_discarded[MYNEWT_VAL(BLE_MAX_CONNECTIONS)];
 static int terminating_count;
 
 static bool
@@ -186,7 +187,26 @@ static void
 terminating_add(uint16_t handle)
 {
   if (terminating_has(handle) || terminating_count >= MYNEWT_VAL(BLE_MAX_CONNECTIONS)) return;
+  terminating_discarded[terminating_count] = false;
   terminating_handle[terminating_count++] = handle;
+}
+
+static void
+terminating_discard(uint16_t handle)
+{
+  terminating_add(handle);
+  for (int i = 0; i < terminating_count; i++) {
+    if (terminating_handle[i] == handle) terminating_discarded[i] = true;
+  }
+}
+
+static bool
+terminating_discarded_has(uint16_t handle)
+{
+  for (int i = 0; i < terminating_count; i++) {
+    if (terminating_handle[i] == handle) return terminating_discarded[i];
+  }
+  return false;
 }
 
 static bool
@@ -194,7 +214,9 @@ terminating_remove(uint16_t handle)
 {
   for (int i = 0; i < terminating_count; i++) {
     if (terminating_handle[i] != handle) continue;
-    terminating_handle[i] = terminating_handle[--terminating_count];
+    int last = --terminating_count;
+    terminating_handle[i] = terminating_handle[last];
+    terminating_discarded[i] = terminating_discarded[last];
     return true;
   }
   return false;
@@ -1002,8 +1024,9 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         picoruby_ble_central_resume_after_connect();
       } else if (role == BLE_ROLE_PERIPHERAL) {
         if (event->connect.status == BLE_HS_EAGAIN) {
+          bool discarded = terminating_discarded_has(event->connect.conn_handle);
           bool terminated = terminating_remove(event->connect.conn_handle);
-          if (power_state != HCI_STATE_OFF) {
+          if (power_state != HCI_STATE_OFF && !discarded) {
             synth_disconnection_complete(event->connect.conn_handle,
                                          terminated ? BLE_ERR_CONN_TERM_LOCAL : BLE_ERR_CONN_ESTABLISHMENT);
           }
@@ -1153,16 +1176,19 @@ list_known_links(known_links_t *links)
 static int
 power_terminate_connection(void)
 {
-  if (central_connect_token != 0) {
-    central_connect_token = 0;
-    enqueue_control_event(central_connect_event, sizeof(central_connect_event));
-  }
   known_links_t links;
   list_known_links(&links);
   uint16_t claimed = picoruby_ble_connection_handle_snapshot();
   bool claimed_listed = false;
   for (int i = 0; i < links.count; i++) {
     if (links.handle[i] == claimed) claimed_listed = true;
+  }
+  if (central_connect_token != 0) {
+    central_connect_token = 0;
+    uint16_t held = (uint16_t)(central_connect_event[4] | (central_connect_event[5] << 8));
+    if (claimed_listed && held == claimed) {
+      enqueue_control_event(central_connect_event, sizeof(central_connect_event));
+    }
   }
   if (claimed != 0xffff && !claimed_listed) picoruby_ble_connection_forget(claimed);
   for (int i = 0; i < links.count; i++) {
@@ -1208,6 +1234,7 @@ picoruby_ble_halting_watchdog_fire(void)
     uint16_t claimed = picoruby_ble_connection_handle_snapshot();
     if (claimed != 0xffff) {
       picoruby_ble_connection_forget(claimed);
+      terminating_discard(claimed);
       synth_disconnection_complete(claimed, BLE_ERR_CONN_TERM_LOCAL);
     }
     if (picoruby_ble_connection_connect_pending()) {
@@ -1254,6 +1281,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   power_on_requested = false;
   picoruby_ble_connection_close();
   terminating_count = 0;
+  central_connect_token = 0;
   have_services = false;
   attr_map_count = 0;
   rdm_used = 0;
