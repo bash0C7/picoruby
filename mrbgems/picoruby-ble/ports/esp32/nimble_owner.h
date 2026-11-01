@@ -19,7 +19,6 @@ bool picoruby_nimble_started(void);
 bool picoruby_nimble_ready(void);
 /* Fixed native latch; cleared only immediately before a new host starts. */
 #define PICORUBY_NIMBLE_CONTROL_WORK_LOST 0x01
-#define PICORUBY_NIMBLE_CONTROL_REQUEST_FAILED 0x04
 #define PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST 0x08
 void picoruby_nimble_cancel_control(uint8_t reason);
 uint8_t picoruby_nimble_control_fault(void);
@@ -41,7 +40,12 @@ typedef struct {
   bool write_rejected;
 } picoruby_nimble_event_rejections_t;
 
-picoruby_nimble_event_result_t picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len);
+typedef enum {
+  PICORUBY_NIMBLE_EVENT_DATA,
+  PICORUBY_NIMBLE_EVENT_CONTROL,
+} picoruby_nimble_event_class_t;
+
+picoruby_nimble_event_result_t picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class);
 // process全体の非破壊snapshot。outはnonnull。reset/start/stopでは消去しない。
 void picoruby_nimble_get_event_rejections(picoruby_nimble_event_rejections_t *out);
 #define PICORUBY_NIMBLE_EVENT_REJECTION_SNAPSHOT_SIZE 13

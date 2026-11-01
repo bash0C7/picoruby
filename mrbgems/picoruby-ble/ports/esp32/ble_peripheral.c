@@ -190,7 +190,7 @@ picoruby_ble_peripheral_service_send_permit(void)
   }
   uint8_t p[4] = { EVT_ATT_CAN_SEND_NOW, 2,
                  send_permit_handle & 0xff, send_permit_handle >> 8 };
-  int result = picoruby_nimble_enqueue_event(p, sizeof(p));
+  int result = picoruby_nimble_enqueue_event(p, sizeof(p), PICORUBY_NIMBLE_EVENT_CONTROL);
   cancel_send_permit();
   os_mbuf_free_chain(probe);
   if (result != PICORUBY_NIMBLE_EVENT_ACCEPTED) {

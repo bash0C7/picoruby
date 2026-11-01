@@ -19,7 +19,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_idf_version.h"
 
 static const char *BLE_TAG = "prb_ble_evq";
 
@@ -701,7 +700,7 @@ register_services(void)
 static void
 enqueue_control_event(const uint8_t *pkt, uint16_t len)
 {
-  if (picoruby_nimble_enqueue_event(pkt, len) != PICORUBY_NIMBLE_EVENT_ACCEPTED) {
+  if (picoruby_nimble_enqueue_event(pkt, len, PICORUBY_NIMBLE_EVENT_CONTROL) != PICORUBY_NIMBLE_EVENT_ACCEPTED) {
     picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_WORK_LOST);
   }
 }
@@ -774,7 +773,7 @@ synth_mtu_exchange_complete(uint16_t conn, uint16_t mtu)
   uint8_t p[6] = { EVT_ATT_MTU_EXCHANGE_COMPLETE, 4, 0, 0, 0, 0 };
   put_le16(p + 2, conn);
   put_le16(p + 4, mtu);
-  picoruby_nimble_enqueue_event(p, sizeof(p));
+  picoruby_nimble_enqueue_event(p, sizeof(p), PICORUBY_NIMBLE_EVENT_DATA);
 }
 
 static void
@@ -795,7 +794,7 @@ synth_advertising_report(const struct ble_gap_disc_desc *d)
     total_len = 14;
   }
   p[1] = (uint8_t)(total_len - 2);
-  picoruby_nimble_enqueue_event(p, total_len);
+  picoruby_nimble_enqueue_event(p, total_len, PICORUBY_NIMBLE_EVENT_DATA);
 }
 
 int
@@ -884,7 +883,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         ESP_LOGW(BLE_TAG, "notification mbuf copy failed");
         break;
       }
-      picoruby_nimble_enqueue_event(p, GATT_EVENT_PAYLOAD_OFFSET + 4 + vlen);
+      picoruby_nimble_enqueue_event(p, GATT_EVENT_PAYLOAD_OFFSET + 4 + vlen, PICORUBY_NIMBLE_EVENT_DATA);
       break;
     }
     default:
@@ -1065,16 +1064,6 @@ gatt_request_complete(uint16_t conn, uint16_t status)
     request_state = GATT_REQUEST_WAIT_DISCONNECT;
     return;
   }
-#if ESP_IDF_VERSION == ESP_IDF_VERSION_VAL(5, 4, 2)
-  /* This fixed SDK can retain ATT busy after native send failure, including
-   * discovery continuation. Public rc does not identify a safe early failure. */
-  if (status != 0 && status != BLE_HS_EDONE &&
-      !(BLE_HS_ERR_ATT_BASE < status && status < BLE_HS_ERR_HCI_BASE)) {
-    request_state = GATT_REQUEST_WAIT_DISCONNECT;
-    picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_REQUEST_FAILED);
-    return;
-  }
-#endif
   request_state = GATT_REQUEST_IDLE;
 }
 
@@ -1084,12 +1073,7 @@ gatt_request_returned(uint16_t conn, int rc)
   /* Inline terminal callbacks may already have completed or closed the request.
    * The shared gate and enqueue-only callbacks preclude a new request here. */
   if (rc == 0 || request_state != GATT_REQUEST_PENDING || request_conn != conn) return;
-#if ESP_IDF_VERSION == ESP_IDF_VERSION_VAL(5, 4, 2)
-  request_state = GATT_REQUEST_WAIT_DISCONNECT;
-  picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_REQUEST_FAILED);
-#else
   request_state = GATT_REQUEST_IDLE;
-#endif
 }
 
 static void

@@ -20,8 +20,25 @@ static const char *TAG = "prb_ble_evq";
 #include "host/util/util.h"
 
 #include "../../include/ble.h"
+#include "esp_idf_version.h"
+#include "syscfg/syscfg.h"
+
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 4, 4) || \
+    (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 4))
+#error "picoruby-ble requires ESP-IDF v5.5.4 or later, or v5.4.4 or later on the v5.4 line"
+#endif
+#if MYNEWT_VAL(BLE_EXT_ADV)
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_EXT_ADV=n"
+#endif
+#if MYNEWT_VAL(BLE_ENABLE_CONN_REATTEMPT)
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=n"
+#endif
+#if !MYNEWT_VAL(BLE_STORE_CONFIG_PERSIST)
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_NVS_PERSIST=y"
+#endif
 
 #define EVQ_DEPTH 32
+#define EVQ_DATA_DEPTH 16
 #define EVQ_PKT_MAX PICORUBY_NIMBLE_EVT_MAX
 #define WRQ_DEPTH 32
 #define WRQ_PKT_MAX PICORUBY_NIMBLE_WRITE_MAX
@@ -148,7 +165,7 @@ picoruby_nimble_record_copy_failure(void)
 }
 
 picoruby_nimble_event_result_t
-picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len)
+picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class)
 {
   taskENTER_CRITICAL(&evq_mux);
   if (len > EVQ_PKT_MAX) {
@@ -162,7 +179,8 @@ picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len)
     taskEXIT_CRITICAL(&evq_mux);
     return PICORUBY_NIMBLE_EVENT_NOT_READY;
   }
-  if (evq_count == EVQ_DEPTH) {
+  int limit = event_class == PICORUBY_NIMBLE_EVENT_CONTROL ? EVQ_DEPTH : EVQ_DATA_DEPTH;
+  if (evq_count >= limit) {
     record_event_rejection(&event_rejections.full);
     taskEXIT_CRITICAL(&evq_mux);
     return PICORUBY_NIMBLE_EVENT_FULL;
