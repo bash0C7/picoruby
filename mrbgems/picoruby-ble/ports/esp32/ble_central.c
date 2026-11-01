@@ -10,6 +10,12 @@
 
 #include "ble_common.h"
 #include "nimble_owner.h"
+#include "esp_log.h"
+
+#define ERROR_CODE_COMMAND_DISALLOWED 0x0C
+#define BTSTACK_MEMORY_ALLOC_FAILED 0x56
+
+static const char *BLE_TAG = "prb_ble_central";
 
 static ble_addr_t central_connect_peer;
 
@@ -51,18 +57,23 @@ BLE_central_stop_scan(void)
 uint8_t
 BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
 {
-  if (!picoruby_ble_connection_gate_enter()) return 0xff;
+  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_COMMAND_DISALLOWED;
+  ble_addr_t peer;
+  peer.type = addr_type;
+  for (int i = 0; i < 6; i++) peer.val[i] = addr[5 - i];
   if (!picoruby_nimble_ready() || !picoruby_ble_connection_begin_connect()) {
+    uint8_t status = ERROR_CODE_COMMAND_DISALLOWED;
+    if (picoruby_nimble_ready() && !picoruby_ble_connection_connect_pending() &&
+        picoruby_ble_connection_handle_snapshot() != 0xffff &&
+        ble_gap_conn_find_by_addr(&peer, NULL) == BLE_HS_ENOTCONN) {
+      status = BTSTACK_MEMORY_ALLOC_FAILED;
+    }
     picoruby_ble_connection_gate_exit();
-    return (uint8_t)BLE_HS_EBUSY;
+    return status;
   }
   if (ble_gap_disc_active()) {
     ble_gap_disc_cancel();
   }
-
-  ble_addr_t peer;
-  peer.type = addr_type;
-  for (int i = 0; i < 6; i++) peer.val[i] = addr[5 - i];
   central_connect_peer = peer;
 
   struct ble_gap_conn_params params = {
@@ -76,12 +87,13 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
     .max_ce_len = 30000 / 625,
   };
 
-  int rc = ble_gap_connect(picoruby_nimble_own_addr_type(), &peer, 30000,
+  int rc = ble_gap_connect(picoruby_nimble_own_addr_type(), &peer, BLE_HS_FOREVER,
                            &params, picoruby_ble_gap_event, NULL);
   if (rc != 0) picoruby_ble_connection_end_connect();
   picoruby_ble_connection_gate_exit();
   if (rc == 0) return 0;
-  return (rc & 0xff) ? (uint8_t)rc : 0xff;
+  ESP_LOGW(BLE_TAG, "connect failed: %d", rc);
+  return rc == BLE_HS_ENOMEM ? BTSTACK_MEMORY_ALLOC_FAILED : ERROR_CODE_COMMAND_DISALLOWED;
 }
 
 /* Runs after one complete host event, with the connection gate held. A

@@ -37,6 +37,17 @@ static const char *BLE_TAG = "prb_ble_evq";
 
 #define HCI_STATE_WORKING 2
 
+#define ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER 0x02
+#define ERROR_CODE_MEMORY_CAPACITY_EXCEEDED 0x07
+#define ERROR_CODE_UNSPECIFIED_ERROR 0x1F
+#define GATT_CLIENT_BUSY 0x94
+#define GATT_CLIENT_IN_WRONG_STATE 0x95
+#define GATT_CLIENT_VALUE_TOO_LONG 0x97
+#define ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LENGTH 0x0D
+#define ATT_ERROR_UNLIKELY_ERROR 0x0E
+#define ATT_ERROR_HCI_DISCONNECT_RECEIVED 0x1F
+#define ATT_ERROR_TIMEOUT 0x7F
+
 #define BLOB_FLAG_READ 0x0002
 #define BLOB_FLAG_WRITE_NO_RSP 0x0004
 #define BLOB_FLAG_WRITE 0x0008
@@ -68,6 +79,9 @@ static const char *BLE_TAG = "prb_ble_evq";
 static enum BLE_role_t role = BLE_ROLE_NONE;
 // VM側のON要求を記録する。NimBLE/controllerの実稼働状態ではない。
 static bool power_on_requested = false;
+static uint8_t central_connect_event[21];
+static uintptr_t central_connect_token;
+static uintptr_t central_connect_serial;
 
 static uint8_t  rdm_buf[RDM_SLOTS][RDM_MAX];
 static uint16_t rdm_len[RDM_SLOTS];
@@ -738,11 +752,10 @@ status_to_u8(uint16_t status)
 }
 
 static void
-synth_le_connection_complete(uint16_t handle, uint8_t status)
+build_le_connection_complete(uint8_t *p, uint16_t handle, uint8_t status)
 {
   struct ble_gap_conn_desc desc;
-  uint8_t p[21];
-  memset(p, 0, sizeof(p));
+  memset(p, 0, 21);
   p[0] = EVT_LE_META;
   p[1] = 19;
   p[2] = 0x01;
@@ -756,6 +769,13 @@ synth_le_connection_complete(uint16_t handle, uint8_t status)
     put_le16(p + 16, desc.conn_latency);
     put_le16(p + 18, desc.supervision_timeout);
   }
+}
+
+static void
+synth_le_connection_complete(uint16_t handle, uint8_t status)
+{
+  uint8_t p[21];
+  build_le_connection_complete(p, handle, status);
   enqueue_control_event(p, sizeof(p));
 }
 
@@ -797,6 +817,19 @@ synth_advertising_report(const struct ble_gap_disc_desc *d)
   picoruby_nimble_enqueue_event(p, total_len, PICORUBY_NIMBLE_EVENT_DATA);
 }
 
+static int
+central_mtu_cb(uint16_t conn, const struct ble_gatt_error *error, uint16_t mtu, void *arg)
+{
+  (void)error;
+  (void)mtu;
+  if (central_connect_token != 0 && (uintptr_t)arg == central_connect_token &&
+      picoruby_ble_connection_matches(conn)) {
+    central_connect_token = 0;
+    enqueue_control_event(central_connect_event, sizeof(central_connect_event));
+  }
+  return 0;
+}
+
 int
 picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
 {
@@ -816,7 +849,12 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         }
         picoruby_ble_central_reset_request();
         if (role == BLE_ROLE_CENTRAL) {
-          synth_le_connection_complete(event->connect.conn_handle, 0);
+          build_le_connection_complete(central_connect_event, event->connect.conn_handle, 0);
+          central_connect_token = ++central_connect_serial;
+          if (ble_gattc_exchange_mtu(event->connect.conn_handle, central_mtu_cb, (void *)central_connect_token) != 0) {
+            central_connect_token = 0;
+            enqueue_control_event(central_connect_event, sizeof(central_connect_event));
+          }
         }
       } else if (role == BLE_ROLE_CENTRAL) {
         picoruby_ble_connection_end_connect();
@@ -1086,6 +1124,27 @@ reset_characteristic_discoveries(void)
   taskEXIT_CRITICAL(&chr_disc_mux);
 }
 
+static uint8_t
+att_status(int status)
+{
+  if (status == 0 || status == BLE_HS_EDONE) return 0;
+  if (status > BLE_HS_ERR_ATT_BASE && status < BLE_HS_ERR_HCI_BASE) return (uint8_t)(status - BLE_HS_ERR_ATT_BASE);
+  if (status == BLE_HS_ENOTCONN) return ATT_ERROR_HCI_DISCONNECT_RECEIVED;
+  if (status == BLE_HS_ETIMEOUT) return ATT_ERROR_TIMEOUT;
+  ESP_LOGW(BLE_TAG, "GATT procedure failed: %d", status);
+  return ATT_ERROR_UNLIKELY_ERROR;
+}
+
+static uint8_t
+request_status(int rc)
+{
+  if (rc == 0) return 0;
+  if (rc == BLE_HS_ENOTCONN) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
+  if (rc == BLE_HS_ENOMEM) return ERROR_CODE_MEMORY_CAPACITY_EXCEEDED;
+  ESP_LOGW(BLE_TAG, "GATT request failed: %d", rc);
+  return ERROR_CODE_UNSPECIFIED_ERROR;
+}
+
 static int
 disc_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
             const struct ble_gatt_svc *service, void *arg)
@@ -1100,7 +1159,7 @@ disc_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
     enqueue_control_event(p, sizeof(p));
   } else {
     gatt_request_complete(conn, error->status);
-    synth_query_complete(conn, status_to_u8(error->status));
+    synth_query_complete(conn, att_status(error->status));
   }
   return 0;
 }
@@ -1130,16 +1189,16 @@ disc_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
     discovery->prev = *chr;
     discovery->have_prev = true;
   } else {
-    if (discovery->have_prev) {
+    if (discovery->have_prev && (error->status == 0 || error->status == BLE_HS_EDONE)) {
       emit_characteristic(conn, &discovery->prev, discovery->end_handle);
-      discovery->have_prev = false;
     }
+    discovery->have_prev = false;
     // No discovery fields are accessed after making the slot reusable.
     taskENTER_CRITICAL(&chr_disc_mux);
     discovery->active = false;
     taskEXIT_CRITICAL(&chr_disc_mux);
     gatt_request_complete(conn, error->status);
-    synth_query_complete(conn, status_to_u8(error->status));
+    synth_query_complete(conn, att_status(error->status));
   }
   return 0;
 }
@@ -1158,7 +1217,7 @@ disc_dsc_cb(uint16_t conn, const struct ble_gatt_error *error,
     enqueue_control_event(p, sizeof(p));
   } else {
     gatt_request_complete(conn, error->status);
-    synth_query_complete(conn, status_to_u8(error->status));
+    synth_query_complete(conn, att_status(error->status));
   }
   return 0;
 }
@@ -1172,7 +1231,7 @@ read_attr_cb(uint16_t conn, const struct ble_gatt_error *error,
   if (error->status == 0 && attr && attr->om) {
     uint16_t vlen = OS_MBUF_PKTLEN(attr->om);
     if (vlen > VALUE_EVENT_DATA_MAX) {
-      synth_query_complete(conn, status_to_u8(BLE_HS_EMSGSIZE));
+      synth_query_complete(conn, att_status(BLE_HS_EMSGSIZE));
       return 0;
     }
     uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 4 + VALUE_EVENT_DATA_MAX];
@@ -1181,13 +1240,12 @@ read_attr_cb(uint16_t conn, const struct ble_gatt_error *error,
     put_le16(p + GATT_EVENT_PAYLOAD_OFFSET, attr->handle);
     put_le16(p + GATT_EVENT_PAYLOAD_OFFSET + 2, vlen);
     if (os_mbuf_copydata(attr->om, 0, vlen, p + GATT_EVENT_PAYLOAD_OFFSET + 4) != 0) {
-      // mbuf の -1 を NimBLE の引数不正へ明示変換する。
-      synth_query_complete(conn, status_to_u8(BLE_HS_EINVAL));
+      synth_query_complete(conn, att_status(BLE_HS_EINVAL));
       return 0;
     }
     enqueue_control_event(p, GATT_EVENT_PAYLOAD_OFFSET + 4 + vlen);
   }
-  synth_query_complete(conn, status_to_u8(error->status));
+  synth_query_complete(conn, att_status(error->status));
   return 0;
 }
 
@@ -1198,32 +1256,23 @@ write_attr_cb(uint16_t conn, const struct ble_gatt_error *error,
   (void)attr;
   (void)arg;
   gatt_request_complete(conn, error->status);
-  synth_query_complete(conn, status_to_u8(error->status));
+  synth_query_complete(conn, att_status(error->status));
   return 0;
-}
-
-static uint8_t
-rc_to_u8(int rc)
-{
-  if (rc == 0) return 0;
-  return (rc & 0xff) ? (uint8_t)rc : 0xff;
 }
 
 static uint8_t
 BLE_discover_primary_services_on_connection(uint16_t conn_handle)
 {
-  int rc = gatt_request_begin(conn_handle);
-  if (rc != 0) return rc_to_u8(rc);
-  rc = ble_gattc_disc_all_svcs(conn_handle, disc_svc_cb, NULL);
+  if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
+  int rc = ble_gattc_disc_all_svcs(conn_handle, disc_svc_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return rc_to_u8(rc);
+  return request_status(rc);
 }
 
 static uint8_t
 BLE_discover_characteristics_for_service_on_connection(uint16_t conn_handle, uint16_t start_handle, uint16_t end_handle)
 {
-  int rc = gatt_request_begin(conn_handle);
-  if (rc != 0) return rc_to_u8(rc);
+  if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
   characteristic_discovery_t *discovery = NULL;
   taskENTER_CRITICAL(&chr_disc_mux);
   for (int i = 0; i < MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
@@ -1231,14 +1280,14 @@ BLE_discover_characteristics_for_service_on_connection(uint16_t conn_handle, uin
     if (slot->active && slot->conn_handle == conn_handle) {
       taskEXIT_CRITICAL(&chr_disc_mux);
       gatt_request_complete(conn_handle, 0);
-      return rc_to_u8(BLE_HS_EBUSY);
+      return GATT_CLIENT_IN_WRONG_STATE;
     }
     if (!slot->active && discovery == NULL) discovery = slot;
   }
   if (discovery == NULL) {
     taskEXIT_CRITICAL(&chr_disc_mux);
     gatt_request_complete(conn_handle, 0);
-    return rc_to_u8(BLE_HS_EBUSY);
+    return GATT_CLIENT_IN_WRONG_STATE;
   }
   discovery->conn_handle = conn_handle;
   discovery->end_handle = end_handle;
@@ -1246,7 +1295,7 @@ BLE_discover_characteristics_for_service_on_connection(uint16_t conn_handle, uin
   discovery->active = true;
   taskEXIT_CRITICAL(&chr_disc_mux);
 
-  rc = ble_gattc_disc_all_chrs(conn_handle, start_handle, end_handle,
+  int rc = ble_gattc_disc_all_chrs(conn_handle, start_handle, end_handle,
                              disc_chr_cb, discovery);
   if (rc != 0) {
     taskENTER_CRITICAL(&chr_disc_mux);
@@ -1254,56 +1303,59 @@ BLE_discover_characteristics_for_service_on_connection(uint16_t conn_handle, uin
     taskEXIT_CRITICAL(&chr_disc_mux);
   }
   gatt_request_returned(conn_handle, rc);
-  return rc_to_u8(rc);
+  return request_status(rc);
 }
 
 static uint8_t
 BLE_read_value_of_characteristic_using_value_handle_on_connection(uint16_t conn_handle, uint16_t value_handle)
 {
-  int rc = gatt_request_begin(conn_handle);
-  if (rc != 0) return rc_to_u8(rc);
-  rc = ble_gattc_read(conn_handle, value_handle, read_attr_cb, NULL);
+  if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
+  int rc = ble_gattc_read(conn_handle, value_handle, read_attr_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return rc_to_u8(rc);
+  return request_status(rc);
 }
 
 static uint8_t
 BLE_discover_characteristic_descriptors_on_connection(uint16_t conn_handle, uint16_t value_handle, uint16_t end_handle)
 {
-  int rc = gatt_request_begin(conn_handle);
-  if (rc != 0) return rc_to_u8(rc);
-  rc = ble_gattc_disc_all_dscs(conn_handle, value_handle, end_handle, disc_dsc_cb, NULL);
+  if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
+  int rc = ble_gattc_disc_all_dscs(conn_handle, value_handle, end_handle, disc_dsc_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return rc_to_u8(rc);
+  return request_status(rc);
 }
 
 static uint8_t
 BLE_write_value_of_characteristic_without_response_on_connection(uint16_t conn_handle, uint16_t value_handle, const uint8_t *data, uint16_t size)
 {
   int rc = picoruby_ble_att_payload_status(conn_handle, size);
-  if (rc != 0) return rc_to_u8(rc);
-  return rc_to_u8(ble_gattc_write_no_rsp_flat(conn_handle, value_handle, data, size));
+  if (rc == BLE_HS_EMSGSIZE) return GATT_CLIENT_VALUE_TOO_LONG;
+  if (rc == 0) rc = ble_gattc_write_no_rsp_flat(conn_handle, value_handle, data, size);
+  if (rc == BLE_HS_ENOMEM) return GATT_CLIENT_BUSY;
+  return request_status(rc);
 }
 
 static uint8_t
 BLE_write_characteristic_descriptor_using_descriptor_handle_on_connection(uint16_t conn_handle, uint16_t descriptor_handle, const uint8_t *data, uint16_t size)
 {
+  if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
   int rc = picoruby_ble_att_payload_status(conn_handle, size);
-  if (rc != 0) return rc_to_u8(rc);
-  rc = gatt_request_begin(conn_handle);
-  if (rc != 0) return rc_to_u8(rc);
-  rc = ble_gattc_write_flat(conn_handle, descriptor_handle, data, size, write_attr_cb, NULL);
+  if (rc == BLE_HS_EMSGSIZE) {
+    gatt_request_complete(conn_handle, 0);
+    synth_query_complete(conn_handle, ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LENGTH);
+    return 0;
+  }
+  if (rc == 0) rc = ble_gattc_write_flat(conn_handle, descriptor_handle, data, size, write_attr_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return rc_to_u8(rc);
+  return request_status(rc);
 }
 
 uint8_t
 BLE_discover_primary_services(uint16_t conn_handle)
 {
-  if (!picoruby_ble_connection_gate_enter()) return rc_to_u8(BLE_HS_ENOTCONN);
+  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (!picoruby_ble_connection_matches(conn_handle)) {
     picoruby_ble_connection_gate_exit();
-    return rc_to_u8(BLE_HS_ENOTCONN);
+    return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   }
   uint8_t rc = BLE_discover_primary_services_on_connection(conn_handle);
   picoruby_ble_connection_gate_exit();
@@ -1313,10 +1365,10 @@ BLE_discover_primary_services(uint16_t conn_handle)
 uint8_t
 BLE_discover_characteristics_for_service(uint16_t conn_handle, uint16_t start_handle, uint16_t end_handle)
 {
-  if (!picoruby_ble_connection_gate_enter()) return rc_to_u8(BLE_HS_ENOTCONN);
+  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (!picoruby_ble_connection_matches(conn_handle)) {
     picoruby_ble_connection_gate_exit();
-    return rc_to_u8(BLE_HS_ENOTCONN);
+    return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   }
   uint8_t rc = BLE_discover_characteristics_for_service_on_connection(conn_handle, start_handle, end_handle);
   picoruby_ble_connection_gate_exit();
@@ -1326,10 +1378,10 @@ BLE_discover_characteristics_for_service(uint16_t conn_handle, uint16_t start_ha
 uint8_t
 BLE_read_value_of_characteristic_using_value_handle(uint16_t conn_handle, uint16_t value_handle)
 {
-  if (!picoruby_ble_connection_gate_enter()) return rc_to_u8(BLE_HS_ENOTCONN);
+  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (!picoruby_ble_connection_matches(conn_handle)) {
     picoruby_ble_connection_gate_exit();
-    return rc_to_u8(BLE_HS_ENOTCONN);
+    return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   }
   uint8_t rc = BLE_read_value_of_characteristic_using_value_handle_on_connection(conn_handle, value_handle);
   picoruby_ble_connection_gate_exit();
@@ -1339,10 +1391,10 @@ BLE_read_value_of_characteristic_using_value_handle(uint16_t conn_handle, uint16
 uint8_t
 BLE_discover_characteristic_descriptors(uint16_t conn_handle, uint16_t value_handle, uint16_t end_handle)
 {
-  if (!picoruby_ble_connection_gate_enter()) return rc_to_u8(BLE_HS_ENOTCONN);
+  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (!picoruby_ble_connection_matches(conn_handle)) {
     picoruby_ble_connection_gate_exit();
-    return rc_to_u8(BLE_HS_ENOTCONN);
+    return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   }
   uint8_t rc = BLE_discover_characteristic_descriptors_on_connection(conn_handle, value_handle, end_handle);
   picoruby_ble_connection_gate_exit();
@@ -1352,10 +1404,10 @@ BLE_discover_characteristic_descriptors(uint16_t conn_handle, uint16_t value_han
 uint8_t
 BLE_write_value_of_characteristic_without_response(uint16_t conn_handle, uint16_t value_handle, const uint8_t *data, uint16_t size)
 {
-  if (!picoruby_ble_connection_gate_enter()) return rc_to_u8(BLE_HS_ENOTCONN);
+  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (!picoruby_ble_connection_matches(conn_handle)) {
     picoruby_ble_connection_gate_exit();
-    return rc_to_u8(BLE_HS_ENOTCONN);
+    return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   }
   uint8_t rc = BLE_write_value_of_characteristic_without_response_on_connection(conn_handle, value_handle, data, size);
   picoruby_ble_connection_gate_exit();
@@ -1365,10 +1417,10 @@ BLE_write_value_of_characteristic_without_response(uint16_t conn_handle, uint16_
 uint8_t
 BLE_write_characteristic_descriptor_using_descriptor_handle(uint16_t conn_handle, uint16_t descriptor_handle, const uint8_t *data, uint16_t size)
 {
-  if (!picoruby_ble_connection_gate_enter()) return rc_to_u8(BLE_HS_ENOTCONN);
+  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (!picoruby_ble_connection_matches(conn_handle)) {
     picoruby_ble_connection_gate_exit();
-    return rc_to_u8(BLE_HS_ENOTCONN);
+    return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   }
   uint8_t rc = BLE_write_characteristic_descriptor_using_descriptor_handle_on_connection(conn_handle, descriptor_handle, data, size);
   picoruby_ble_connection_gate_exit();
