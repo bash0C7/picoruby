@@ -55,7 +55,7 @@ BLE_central_start_scan(void)
 {
   if (!picoruby_ble_connection_gate_enter()) return -1;
   int rc = 0;
-  if (picoruby_ble_power_working()) {
+  if (picoruby_ble_power_working() && !picoruby_ble_connection_connect_pending()) {
     rc = scan_start();
     if (rc == BLE_HS_EALREADY && ble_gap_disc_active()) rc = 0;
   }
@@ -67,8 +67,10 @@ BLE_central_start_scan(void)
 int
 BLE_central_stop_scan(void)
 {
+  if (!picoruby_ble_connection_gate_enter()) return -1;
   scan_wanted = false;
   int rc = ble_gap_disc_cancel();
+  picoruby_ble_connection_gate_exit();
   return rc == BLE_HS_EALREADY ? 0 : rc;
 }
 
@@ -81,6 +83,7 @@ picoruby_ble_central_scan_reset(void)
 void
 picoruby_ble_central_suspend_scan(void)
 {
+  if (!ble_hs_is_enabled()) return;
   ble_gap_disc_cancel();
 }
 

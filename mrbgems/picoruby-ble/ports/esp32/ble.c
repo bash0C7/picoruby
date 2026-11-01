@@ -170,10 +170,40 @@ find_map_by_nimble(uint16_t nimble_handle)
 
 static uint8_t att_security_status(uint16_t flags, bool is_read, uint16_t conn);
 
+static uint16_t terminating_handle[MYNEWT_VAL(BLE_MAX_CONNECTIONS)];
+static int terminating_count;
+
+static bool
+terminating_has(uint16_t handle)
+{
+  for (int i = 0; i < terminating_count; i++) {
+    if (terminating_handle[i] == handle) return true;
+  }
+  return false;
+}
+
+static void
+terminating_add(uint16_t handle)
+{
+  if (terminating_has(handle) || terminating_count >= MYNEWT_VAL(BLE_MAX_CONNECTIONS)) return;
+  terminating_handle[terminating_count++] = handle;
+}
+
+static bool
+terminating_remove(uint16_t handle)
+{
+  for (int i = 0; i < terminating_count; i++) {
+    if (terminating_handle[i] != handle) continue;
+    terminating_handle[i] = terminating_handle[--terminating_count];
+    return true;
+  }
+  return false;
+}
+
 static void
 peripheral_adopt(uint16_t handle)
 {
-  if (role != BLE_ROLE_PERIPHERAL || handle == 0xffff) return;
+  if (role != BLE_ROLE_PERIPHERAL || handle == 0xffff || terminating_has(handle)) return;
   if (picoruby_ble_connection_handle_snapshot() != 0xffff) return;
   if (ble_gap_conn_find(handle, NULL) != 0) return;
   if (!picoruby_ble_connection_claim(handle)) return;
@@ -927,7 +957,8 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           picoruby_ble_connection_release(event->connect.conn_handle);
           conn_sc = false;
           picoruby_ble_central_reset_request();
-          synth_disconnection_complete(event->connect.conn_handle, BLE_ERR_CONN_ESTABLISHMENT);
+          synth_disconnection_complete(event->connect.conn_handle,
+                                       terminating_remove(event->connect.conn_handle) ? BLE_ERR_CONN_TERM_LOCAL : BLE_ERR_CONN_ESTABLISHMENT);
           picoruby_ble_peripheral_rearm_adv();
         }
         break;
@@ -941,6 +972,8 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           if (rc != 0) {
             ESP_LOGE(BLE_TAG, "extra connection termination failed: %d", rc);
             picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
+          } else {
+            terminating_add(event->connect.conn_handle);
           }
           break;
         }
@@ -958,17 +991,22 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           picoruby_ble_central_resume_after_connect();
         }
       } else if (role == BLE_ROLE_CENTRAL) {
+        bool was_pending = picoruby_ble_connection_connect_pending();
         picoruby_ble_connection_end_connect();
-        if (event->connect.status == BLE_HS_EAPP) {
+        if (was_pending && event->connect.status == BLE_HS_EAPP) {
           synth_disconnection_complete(0xffff, BLE_ERR_CONN_TERM_LOCAL);
-        } else {
+        } else if (was_pending) {
           uint8_t status = (uint8_t)event->connect.status;
           synth_le_connection_complete(0, status ? status : 0xff);
         }
         picoruby_ble_central_resume_after_connect();
       } else if (role == BLE_ROLE_PERIPHERAL) {
         if (event->connect.status == BLE_HS_EAGAIN) {
-          synth_disconnection_complete(event->connect.conn_handle, BLE_ERR_CONN_ESTABLISHMENT);
+          bool terminated = terminating_remove(event->connect.conn_handle);
+          if (power_state != HCI_STATE_OFF) {
+            synth_disconnection_complete(event->connect.conn_handle,
+                                         terminated ? BLE_ERR_CONN_TERM_LOCAL : BLE_ERR_CONN_ESTABLISHMENT);
+          }
         }
         picoruby_ble_peripheral_rearm_adv();
       } else if (role == BLE_ROLE_BROADCASTER) {
@@ -976,6 +1014,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       }
       break;
     case BLE_GAP_EVENT_DISCONNECT:
+      terminating_remove(event->disconnect.conn.conn_handle);
       if (!picoruby_ble_connection_release(event->disconnect.conn.conn_handle)) {
         if (role == BLE_ROLE_CENTRAL && picoruby_ble_central_connect_lost(&event->disconnect.conn)) {
           uint8_t p[21];
@@ -1105,6 +1144,7 @@ static void
 list_known_links(known_links_t *links)
 {
   links->count = 0;
+  if (!ble_hs_is_enabled()) return;
   ble_hs_lock_nested();
   ble_gap_conn_foreach_handle(collect_known_link, links);
   ble_hs_unlock_nested();
@@ -1113,7 +1153,10 @@ list_known_links(known_links_t *links)
 static int
 power_terminate_connection(void)
 {
-  central_connect_token = 0;
+  if (central_connect_token != 0) {
+    central_connect_token = 0;
+    enqueue_control_event(central_connect_event, sizeof(central_connect_event));
+  }
   known_links_t links;
   list_known_links(&links);
   uint16_t claimed = picoruby_ble_connection_handle_snapshot();
@@ -1127,12 +1170,21 @@ power_terminate_connection(void)
   }
   for (int i = 0; i < links.count; i++) {
     int rc = ble_gap_terminate(links.handle[i], BLE_ERR_REM_USER_CONN_TERM);
+    if (rc == 0 || rc == BLE_HS_EALREADY) terminating_add(links.handle[i]);
     if (rc == 0 || rc == BLE_HS_EALREADY || rc == BLE_HS_ENOTCONN) continue;
     if (picoruby_nimble_control_fault() & PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST) continue;
     ESP_LOGE(BLE_TAG, "connection termination failed: %d", rc);
     picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
   }
   return links.count;
+}
+
+static void
+power_finish_off(void)
+{
+  picoruby_nimble_halting_watchdog_stop();
+  power_state = HCI_STATE_OFF;
+  synth_state(HCI_STATE_OFF);
 }
 
 static void
@@ -1145,8 +1197,29 @@ power_halting_step(void)
   if (picoruby_ble_connection_release_deferred_record()) {
     synth_disconnection_complete(0xffff, BLE_ERR_CONN_TERM_LOCAL);
   }
-  power_state = HCI_STATE_OFF;
-  synth_state(HCI_STATE_OFF);
+  power_finish_off();
+}
+
+void
+picoruby_ble_halting_watchdog_fire(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return;
+  if (power_state == HCI_STATE_HALTING) {
+    uint16_t claimed = picoruby_ble_connection_handle_snapshot();
+    if (claimed != 0xffff) {
+      picoruby_ble_connection_forget(claimed);
+      synth_disconnection_complete(claimed, BLE_ERR_CONN_TERM_LOCAL);
+    }
+    if (picoruby_ble_connection_connect_pending()) {
+      picoruby_ble_connection_end_connect();
+      synth_disconnection_complete(0xffff, BLE_ERR_CONN_TERM_LOCAL);
+    }
+    if (picoruby_ble_connection_release_deferred_record()) {
+      synth_disconnection_complete(0xffff, BLE_ERR_CONN_TERM_LOCAL);
+    }
+    power_finish_off();
+  }
+  picoruby_ble_connection_gate_exit();
 }
 
 void
@@ -1180,6 +1253,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   role = (enum BLE_role_t)ble_role;
   power_on_requested = false;
   picoruby_ble_connection_close();
+  terminating_count = 0;
   have_services = false;
   attr_map_count = 0;
   rdm_used = 0;
@@ -1244,6 +1318,7 @@ BLE_hci_power_control(uint8_t power_mode)
   if (!picoruby_nimble_ready() && (power_mode != 0 || !picoruby_nimble_started())) {
     power_state = HCI_STATE_OFF;
     power_on_requested = false;
+    picoruby_nimble_halting_watchdog_stop();
     picoruby_nimble_heartbeat_enable(false);
     return power_mode == 0 ? 0 : BLE_POWER_CONTROL_NOT_READY;
   }
@@ -1255,6 +1330,7 @@ BLE_hci_power_control(uint8_t power_mode)
         break;
       }
       synth_state(HCI_STATE_INITIALIZING);
+      if (power_state == HCI_STATE_HALTING) picoruby_nimble_halting_watchdog_stop();
       picoruby_ble_connection_clear_deferred();
       power_state = HCI_STATE_WORKING;
       power_set_heartbeat(true);
@@ -1269,8 +1345,9 @@ BLE_hci_power_control(uint8_t power_mode)
       power_set_heartbeat(false);
       power_state = HCI_STATE_HALTING;
       synth_state(HCI_STATE_HALTING);
+      picoruby_nimble_halting_watchdog_start();
       power_suspend_requests();
-      if (picoruby_ble_connection_connect_pending()) {
+      if (picoruby_ble_connection_connect_pending() && ble_hs_is_enabled()) {
         int rc = ble_gap_conn_cancel();
         if (rc != 0 && rc != BLE_HS_EALREADY) {
           ESP_LOGE(BLE_TAG, "connect cancel failed: %d", rc);
@@ -1285,6 +1362,7 @@ BLE_hci_power_control(uint8_t power_mode)
         break;
       }
       power_set_heartbeat(false);
+      if (power_state == HCI_STATE_HALTING) picoruby_nimble_halting_watchdog_stop();
       power_state = HCI_STATE_FALLING_ASLEEP;
       synth_state(HCI_STATE_FALLING_ASLEEP);
       power_terminate_connection();

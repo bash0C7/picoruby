@@ -80,6 +80,8 @@ bool picoruby_nimble_peek_write(uint16_t ruby_handle, uint8_t *copy, uint16_t *l
 bool picoruby_nimble_commit_write(const picoruby_nimble_write_ticket_t *ticket);
 void picoruby_nimble_reset_writes(void);
 void picoruby_nimble_heartbeat_enable(bool enable);
+void picoruby_nimble_halting_watchdog_start(void);
+void picoruby_nimble_halting_watchdog_stop(void);
 void picoruby_nimble_pump(void);
 void picoruby_nimble_attach_vm(void *vm);
 

@@ -33,6 +33,7 @@ void picoruby_ble_connection_reopen(void);
 void picoruby_ble_reconcile_connections(void);
 bool picoruby_ble_central_reconcile_connect(void);
 bool picoruby_ble_central_connect_lost(const struct ble_gap_conn_desc *conn);
+void picoruby_ble_halting_watchdog_fire(void);
 void picoruby_ble_central_scan_reset(void);
 void picoruby_ble_central_suspend_scan(void);
 void picoruby_ble_central_resume_scan(void);

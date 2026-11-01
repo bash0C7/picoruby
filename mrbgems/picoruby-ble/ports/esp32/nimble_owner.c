@@ -34,6 +34,9 @@ static const char *TAG = "prb_ble_evq";
 #if MYNEWT_VAL(BLE_ENABLE_CONN_REATTEMPT)
 #error "picoruby-ble requires CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=n"
 #endif
+#if MYNEWT_VAL(BLE_HOST_ALLOW_CONNECT_WITH_SCAN)
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_HOST_ALLOW_CONNECT_WITH_SCAN=n"
+#endif
 #if !MYNEWT_VAL(BLE_STORE_CONFIG_PERSIST)
 #error "picoruby-ble requires CONFIG_BT_NIMBLE_NVS_PERSIST=y"
 #endif
@@ -52,6 +55,7 @@ void ble_store_config_init(void);
 #define WRQ_DEPTH PICORUBY_NIMBLE_WRITE_DEPTH
 #define WRQ_PKT_MAX PICORUBY_NIMBLE_WRITE_MAX
 #define HEARTBEAT_PERIOD_US (1000 * 1000)
+#define HALTING_WATCHDOG_US (1000 * 1000)
 #define SYNC_TIMEOUT_TICKS pdMS_TO_TICKS(2000)
 #define HOST_DONE_TIMEOUT_TICKS SYNC_TIMEOUT_TICKS
 
@@ -78,6 +82,7 @@ typedef struct {
   uint32_t generation;
   int16_t next;
   bool occupied;
+  bool cccd;
 } wrq_entry_t;
 
 static wrq_entry_t wrq[WRQ_DEPTH];
@@ -85,6 +90,7 @@ static int wrq_head = -1;
 static int wrq_tail = -1;
 static int wrq_count = 0;
 static int wrq_cccd_reserved = 0;
+static int wrq_cccd_queued = 0;
 static uint32_t wrq_generation = 0;
 /* resetで無効化し、次のVM peekだけが再設定する。世代wrapでも旧ticketを復活させない。 */
 static bool wrq_snapshot_valid = false;
@@ -106,6 +112,7 @@ static bool cleanup_blocked = false;
 static bool lifecycle_busy = false;
 static portMUX_TYPE owner_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static esp_timer_handle_t heartbeat_timer = NULL;
+static esp_timer_handle_t halting_timer = NULL;
 static int heartbeat_depth = 0; // nest count: only the outermost disable actually stops it
 // All runtime accesses use owner_state_mux; timer arrivals may coalesce.
 static bool heartbeat_pending = false;
@@ -274,7 +281,7 @@ wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
       return 0;
     }
   }
-  if (wrq_count >= (cccd ? WRQ_DEPTH : WRQ_DEPTH - wrq_cccd_reserved)) {
+  if (cccd ? wrq_count >= WRQ_DEPTH : wrq_count - wrq_cccd_queued >= WRQ_DEPTH - wrq_cccd_reserved) {
     wrq_dropped++;
     bool first = !wrq_drop_logged;
     wrq_drop_logged = true;
@@ -291,6 +298,7 @@ wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
   int slot = 0;
   while (wrq[slot].occupied) slot++;
   wrq[slot].occupied = true;
+  wrq[slot].cccd = cccd;
   wrq[slot].next = -1;
   wrq[slot].generation++;
   wrq[slot].ruby_handle = ruby_handle;
@@ -300,6 +308,7 @@ wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
   else wrq_head = slot;
   wrq_tail = slot;
   wrq_count++;
+  if (cccd) wrq_cccd_queued++;
   taskEXIT_CRITICAL(&wrq_mux);
   return 0;
 }
@@ -333,6 +342,7 @@ picoruby_nimble_reset_writes(void)
   wrq_generation++;
   wrq_head = wrq_tail = -1;
   wrq_count = 0;
+  wrq_cccd_queued = 0;
   for (int i = 0; i < WRQ_DEPTH; i++) wrq[i].occupied = false;
   wrq_drop_logged = false;
   taskEXIT_CRITICAL(&wrq_mux);
@@ -398,6 +408,7 @@ picoruby_nimble_commit_write(const picoruby_nimble_write_ticket_t *ticket)
   if (wrq_tail == slot) wrq_tail = prev;
   wrq[slot].occupied = false;
   wrq_count--;
+  if (wrq[slot].cccd) wrq_cccd_queued--;
   taskEXIT_CRITICAL(&wrq_mux);
   return true;
 }
@@ -435,6 +446,25 @@ heartbeat_timer_cb(void *arg)
   taskENTER_CRITICAL(&owner_state_mux);
   heartbeat_pending = true;
   taskEXIT_CRITICAL(&owner_state_mux);
+}
+
+static void
+halting_timer_cb(void *arg)
+{
+  (void)arg;
+  picoruby_ble_halting_watchdog_fire();
+}
+
+void
+picoruby_nimble_halting_watchdog_start(void)
+{
+  if (halting_timer) esp_timer_start_once(halting_timer, HALTING_WATCHDOG_US);
+}
+
+void
+picoruby_nimble_halting_watchdog_stop(void)
+{
+  if (halting_timer) esp_timer_stop(halting_timer);
 }
 
 void
@@ -569,6 +599,13 @@ ensure_timers(void)
     };
     if (esp_timer_create(&hargs, &heartbeat_timer) != ESP_OK) return -1;
   }
+  if (halting_timer == NULL) {
+    const esp_timer_create_args_t wargs = {
+      .callback = halting_timer_cb,
+      .name = "prb_ble_halt",
+    };
+    if (esp_timer_create(&wargs, &halting_timer) != ESP_OK) return -1;
+  }
   return 0;
 }
 
@@ -589,6 +626,7 @@ stop_host(bool issue_stop, bool done_seen)
   if (issue_stop) {
     picoruby_ble_connection_close(); /* Unlocks before blocking host stop / join. */
     heartbeat_force_stop();
+    picoruby_nimble_halting_watchdog_stop();
     ble_gap_adv_stop();
     ble_gap_disc_cancel();
     int rc = nimble_port_stop();

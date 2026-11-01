@@ -389,6 +389,7 @@ picoruby_ble_peripheral_rearm_adv(void)
 void
 picoruby_ble_peripheral_suspend_adv(void)
 {
+  if (!ble_hs_is_enabled()) return;
   if (!picoruby_ble_connection_gate_enter()) return;
   if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
     picoruby_ble_connection_gate_exit();
