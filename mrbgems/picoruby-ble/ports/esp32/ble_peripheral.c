@@ -26,6 +26,9 @@ static SemaphoreHandle_t connection_gate;
 static uint16_t con_handle = 0xffff;
 static bool connection_accepting;
 static bool central_connect_pending;
+static uint8_t central_connect_deferred;
+#define CONNECT_DEFERRED_REQUEST 0x01
+#define CONNECT_DEFERRED_RECORD 0x02
 /* 未生成の要求だけを保持し、生成済みCANや後続notifyの資源は予約しない。 */
 static bool send_permit_pending;
 static uint16_t send_permit_handle = 0xffff;
@@ -75,10 +78,41 @@ picoruby_ble_connection_release(uint16_t handle)
   return true;
 }
 
+void
+picoruby_ble_connection_forget(uint16_t handle)
+{
+  if (handle == 0xffff || handle != con_handle) return;
+  cancel_send_permit();
+  con_handle = 0xffff;
+}
+
 bool
 picoruby_ble_connection_available(void)
 {
-  return connection_accepting && picoruby_nimble_ready() && con_handle == 0xffff && !central_connect_pending;
+  return connection_accepting && picoruby_nimble_ready() && con_handle == 0xffff &&
+         !central_connect_pending && central_connect_deferred == 0;
+}
+
+bool
+picoruby_ble_connection_defer_connect(void)
+{
+  if (!picoruby_ble_connection_available()) return false;
+  central_connect_deferred = CONNECT_DEFERRED_REQUEST | CONNECT_DEFERRED_RECORD;
+  return true;
+}
+
+void
+picoruby_ble_connection_clear_deferred(void)
+{
+  central_connect_deferred = 0;
+}
+
+bool
+picoruby_ble_connection_release_deferred_record(void)
+{
+  bool had = (central_connect_deferred & CONNECT_DEFERRED_RECORD) != 0;
+  central_connect_deferred &= (uint8_t)~CONNECT_DEFERRED_RECORD;
+  return had;
 }
 
 bool
@@ -108,6 +142,7 @@ picoruby_ble_connection_close(void)
   cancel_send_permit();
   connection_accepting = false;
   central_connect_pending = false;
+  central_connect_deferred = 0;
   picoruby_ble_connection_gate_exit();
 }
 
@@ -118,6 +153,7 @@ picoruby_ble_connection_reopen(void)
   cancel_send_permit();
   con_handle = 0xffff;
   central_connect_pending = false;
+  central_connect_deferred = 0;
   connection_accepting = true;
   picoruby_ble_connection_gate_exit();
 }

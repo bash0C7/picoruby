@@ -54,12 +54,12 @@ int
 BLE_central_start_scan(void)
 {
   if (!picoruby_ble_connection_gate_enter()) return -1;
-  scan_wanted = true;
   int rc = 0;
   if (picoruby_ble_power_working()) {
     rc = scan_start();
     if (rc == BLE_HS_EALREADY && ble_gap_disc_active()) rc = 0;
   }
+  if (rc == 0) scan_wanted = true;
   picoruby_ble_connection_gate_exit();
   return rc;
 }
@@ -68,7 +68,8 @@ int
 BLE_central_stop_scan(void)
 {
   scan_wanted = false;
-  return ble_gap_disc_cancel();
+  int rc = ble_gap_disc_cancel();
+  return rc == BLE_HS_EALREADY ? 0 : rc;
 }
 
 void
@@ -81,6 +82,14 @@ void
 picoruby_ble_central_suspend_scan(void)
 {
   ble_gap_disc_cancel();
+}
+
+void
+picoruby_ble_central_resume_after_connect(void)
+{
+  if (!scan_wanted || !picoruby_ble_power_working() || picoruby_ble_connection_connect_pending()) return;
+  if (ble_gap_disc_active()) return;
+  scan_start();
 }
 
 void
@@ -98,7 +107,10 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
   ble_addr_t peer;
   peer.type = addr_type;
   for (int i = 0; i < 6; i++) peer.val[i] = addr[5 - i];
-  if (!picoruby_nimble_ready() || !picoruby_ble_connection_begin_connect()) {
+  bool deferred = !picoruby_ble_power_working();
+  bool started = picoruby_nimble_ready() &&
+                 (deferred ? picoruby_ble_connection_defer_connect() : picoruby_ble_connection_begin_connect());
+  if (!started) {
     uint8_t status = ERROR_CODE_COMMAND_DISALLOWED;
     if (picoruby_nimble_ready() && !picoruby_ble_connection_connect_pending() &&
         picoruby_ble_connection_handle_snapshot() != 0xffff &&
@@ -107,6 +119,10 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
     }
     picoruby_ble_connection_gate_exit();
     return status;
+  }
+  if (deferred) {
+    picoruby_ble_connection_gate_exit();
+    return 0;
   }
   if (ble_gap_disc_active()) {
     ble_gap_disc_cancel();
@@ -126,7 +142,10 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
 
   int rc = ble_gap_connect(picoruby_nimble_own_addr_type(), &peer, BLE_HS_FOREVER,
                            &params, picoruby_ble_gap_event, NULL);
-  if (rc != 0) picoruby_ble_connection_end_connect();
+  if (rc != 0) {
+    picoruby_ble_connection_end_connect();
+    picoruby_ble_central_resume_after_connect();
+  }
   picoruby_ble_connection_gate_exit();
   if (rc == 0) return 0;
   ESP_LOGW(BLE_TAG, "connect failed: %d", rc);

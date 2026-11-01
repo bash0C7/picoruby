@@ -49,7 +49,7 @@ void ble_store_config_init(void);
 #define EVQ_DEPTH 32
 #define EVQ_DATA_DEPTH 16
 #define EVQ_PKT_MAX PICORUBY_NIMBLE_EVT_MAX
-#define WRQ_DEPTH 16
+#define WRQ_DEPTH PICORUBY_NIMBLE_WRITE_DEPTH
 #define WRQ_PKT_MAX PICORUBY_NIMBLE_WRITE_MAX
 #define HEARTBEAT_PERIOD_US (1000 * 1000)
 #define SYNC_TIMEOUT_TICKS pdMS_TO_TICKS(2000)
@@ -84,6 +84,7 @@ static wrq_entry_t wrq[WRQ_DEPTH];
 static int wrq_head = -1;
 static int wrq_tail = -1;
 static int wrq_count = 0;
+static int wrq_cccd_reserved = 0;
 static uint32_t wrq_generation = 0;
 /* resetで無効化し、次のVM peekだけが再設定する。世代wrapでも旧ticketを復活させない。 */
 static bool wrq_snapshot_valid = false;
@@ -253,8 +254,8 @@ picoruby_nimble_reset_events(void)
   taskEXIT_CRITICAL(&owner_state_mux);
 }
 
-int
-picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_t len)
+static int
+wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
 {
   if (ruby_handle == 0 || len == 0 || len > WRQ_PKT_MAX) {
     taskENTER_CRITICAL(&evq_mux);
@@ -263,7 +264,17 @@ picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_
     return -1;
   }
   taskENTER_CRITICAL(&wrq_mux);
-  if (wrq_count == WRQ_DEPTH) {
+  if (cccd) {
+    for (int slot = wrq_head; slot >= 0; slot = wrq[slot].next) {
+      if (wrq[slot].ruby_handle != ruby_handle) continue;
+      wrq[slot].generation++;
+      wrq[slot].len = len;
+      memcpy(wrq[slot].data, data, len);
+      taskEXIT_CRITICAL(&wrq_mux);
+      return 0;
+    }
+  }
+  if (wrq_count >= (cccd ? WRQ_DEPTH : WRQ_DEPTH - wrq_cccd_reserved)) {
     wrq_dropped++;
     bool first = !wrq_drop_logged;
     wrq_drop_logged = true;
@@ -291,6 +302,26 @@ picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_
   wrq_count++;
   taskEXIT_CRITICAL(&wrq_mux);
   return 0;
+}
+
+int
+picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_t len)
+{
+  return wrq_enqueue(ruby_handle, data, len, false);
+}
+
+int
+picoruby_nimble_enqueue_cccd(uint16_t ruby_handle, const uint8_t *data, uint16_t len)
+{
+  return wrq_enqueue(ruby_handle, data, len, true);
+}
+
+void
+picoruby_nimble_reserve_cccd_writes(int count)
+{
+  taskENTER_CRITICAL(&wrq_mux);
+  wrq_cccd_reserved = count;
+  taskEXIT_CRITICAL(&wrq_mux);
 }
 
 void

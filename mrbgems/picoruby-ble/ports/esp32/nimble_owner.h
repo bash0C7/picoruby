@@ -63,6 +63,7 @@ void picoruby_nimble_record_copy_failure(void);
 void picoruby_nimble_copy_host_reset_snapshot(uint8_t *out);
 void picoruby_nimble_reset_events(void);
 #define PICORUBY_NIMBLE_WRITE_MAX 512
+#define PICORUBY_NIMBLE_WRITE_DEPTH 16
 /* VM専用、非再入、peekからcommitまで同時consumerなし。copyは呼出元のnative領域。 */
 typedef struct {
   uint32_t queue_generation;
@@ -71,6 +72,8 @@ typedef struct {
   int16_t slot;
 } picoruby_nimble_write_ticket_t;
 int picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
+int picoruby_nimble_enqueue_cccd(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
+void picoruby_nimble_reserve_cccd_writes(int count);
 int picoruby_nimble_write_pending(uint16_t ruby_handle);
 bool picoruby_nimble_peek_write(uint16_t ruby_handle, uint8_t *copy, uint16_t *len,
                                picoruby_nimble_write_ticket_t *ticket);
