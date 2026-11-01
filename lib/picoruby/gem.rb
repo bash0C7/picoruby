@@ -65,7 +65,7 @@ module MRuby
           _pp "AOT", aot_c.relative_path
           mkdir_p aot_dir
           deps = File.read(deps_file).split("\n").join(",")
-          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem #{name} --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps #{deps}]
+          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem "#{dir}" --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps #{deps}]
         end
         aot_rbfiles.each { |f| file f => aot_c }
         cc.include_paths << "#{MRUBY_ROOT}/mrbgems/picoruby-aot/include"

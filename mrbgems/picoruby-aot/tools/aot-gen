@@ -1,10 +1,12 @@
 #!/usr/bin/env ruby
 # Generate the AOT C and the remaining Ruby for one gem.
 #
-#   tools/aot-gen --gem picoruby-foo --workspace DIR --out-c FILE --out-rb DIR \
+#   tools/aot-gen --gem DIR --workspace DIR --out-c FILE --out-rb DIR \
 #                 [--manifest FILE] [--exclude A#b,C.d] [--include-widened] \
 #                 [--deps a,b,c] [--types JSON]
 #
+# --gem is the gem's directory, inside mrbgems/ or not (a build config's
+# gemdir:, git: or github:).
 # Without --types the tool runs spinel itself (SPINEL=/path/to/spinel, or
 # `spinel` on PATH) and keeps its output under the workspace. --deps names
 # the gems of the build (the wait search looks into their defs); without
@@ -32,7 +34,7 @@ end.parse!
 abort "aot-gen: --gem, --out-c and --out-rb are required" unless opts[:gem] && opts[:out_c] && opts[:out_rb]
 
 graph = PicorubyAot::GemGraph.new("#{mruby_root}/mrbgems")
-gem = graph[opts[:gem]]
+gem = graph.add(opts[:gem])
 
 json =
   if opts[:types]

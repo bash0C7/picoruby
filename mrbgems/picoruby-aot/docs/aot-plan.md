@@ -340,7 +340,7 @@ The measurements that keep them undeclared are in section 3.
 - After a generator change: run `rake test:gems:aot_twin` and
   `rake test:gems:aot_twin32`, then refresh the counts in section 2
   (`SPINEL=mrbgems/picoruby-aot/lib/spinel/bin/spinel ruby
-  mrbgems/picoruby-aot/tools/aot-gen --include-widened --gem GEM ...
+  mrbgems/picoruby-aot/tools/aot-gen --include-widened --gem DIR ...
   --manifest FILE`). Move a done item to `architecture.md`.
 - After a semantics change: update `architecture.md` section 4.
 - After a device measurement: add the number to `architecture.md`
