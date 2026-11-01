@@ -17,6 +17,7 @@ static const char *TAG = "prb_ble_evq";
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
+#include "host/ble_store.h"
 #include "host/util/util.h"
 
 #include "../../include/ble.h"
@@ -36,11 +37,19 @@ static const char *TAG = "prb_ble_evq";
 #if !MYNEWT_VAL(BLE_STORE_CONFIG_PERSIST)
 #error "picoruby-ble requires CONFIG_BT_NIMBLE_NVS_PERSIST=y"
 #endif
+#if !MYNEWT_VAL(BLE_SM_SC)
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_SM_SC=y"
+#endif
+#if PICORUBY_NIMBLE_WRITE_MAX != BLE_ATT_ATTR_MAX_LEN
+#error "write queue entry size must equal BLE_ATT_ATTR_MAX_LEN"
+#endif
+
+void ble_store_config_init(void);
 
 #define EVQ_DEPTH 32
 #define EVQ_DATA_DEPTH 16
 #define EVQ_PKT_MAX PICORUBY_NIMBLE_EVT_MAX
-#define WRQ_DEPTH 32
+#define WRQ_DEPTH 16
 #define WRQ_PKT_MAX PICORUBY_NIMBLE_WRITE_MAX
 #define HEARTBEAT_PERIOD_US (1000 * 1000)
 #define SYNC_TIMEOUT_TICKS pdMS_TO_TICKS(2000)
@@ -626,9 +635,13 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   ble_hs_cfg.reset_cb = on_reset;
   ble_hs_cfg.gatts_register_cb = picoruby_ble_gatts_register_cb;
   ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
-  ble_hs_cfg.sm_bonding = 0;
+  ble_hs_cfg.sm_bonding = 1;
   ble_hs_cfg.sm_mitm = 0;
-  ble_hs_cfg.sm_sc = 0;
+  ble_hs_cfg.sm_sc = 1;
+  ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+  ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+  ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+  ble_store_config_init();
 
   if (setup && setup() != 0) {
     if (nimble_port_deinit() != ESP_OK) {

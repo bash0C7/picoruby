@@ -11,6 +11,7 @@
 #include "host/ble_att.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
+#include "host/ble_store.h"
 #include "host/ble_uuid.h"
 #include "os/os_mbuf.h"
 
@@ -147,6 +148,7 @@ static int svc_count, chr_slot_count, dsc_slot_count, uuid_count;
 static bool have_services = false;
 
 static uint8_t *owned_profile_data = NULL;
+static bool conn_sc = false;
 
 uint16_t
 picoruby_ble_handle_r2n(uint16_t ruby_handle)
@@ -166,6 +168,8 @@ find_map_by_nimble(uint16_t nimble_handle)
   return NULL;
 }
 
+static uint8_t att_security_status(uint16_t flags, bool is_read, uint16_t conn);
+
 static int
 gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -181,6 +185,8 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
     case BLE_GATT_ACCESS_OP_READ_CHR:
     case BLE_GATT_ACCESS_OP_READ_DSC: {
       if (!(e->att_flags & BLOB_FLAG_READ)) return BLE_ATT_ERR_READ_NOT_PERMITTED;
+      uint8_t read_sec = att_security_status(e->att_flags, true, conn);
+      if (read_sec) return read_sec;
       static uint8_t rd_tmp[RDM_MAX]; // static is safe: this callback has only one caller task
       const uint8_t *data = e->static_value;
       uint16_t len = e->static_len;
@@ -213,8 +219,11 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
           !(e->att_flags & (BLOB_FLAG_WRITE | BLOB_FLAG_WRITE_NO_RSP))) {
         return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
       }
-      static uint8_t buf[256];
+      uint8_t write_sec = att_security_status(e->att_flags, false, conn);
+      if (write_sec) return write_sec;
+      static uint8_t buf[PICORUBY_NIMBLE_WRITE_MAX];
       uint16_t out_len = 0;
+      if (OS_MBUF_PKTLEN(ctxt->om) == 0) return 0;
       if (OS_MBUF_PKTLEN(ctxt->om) > sizeof(buf)) {
         picoruby_nimble_record_oversized_event();
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -288,6 +297,7 @@ props_to_chr_flags(uint8_t props)
   if (props & 0x10) f |= BLE_GATT_CHR_F_NOTIFY;
   if (props & 0x20) f |= BLE_GATT_CHR_F_INDICATE;
   if (props & 0x40) f |= BLE_GATT_CHR_F_AUTH_SIGN_WRITE;
+  if (props & 0x80) f |= BLE_GATT_CHR_F_RELIABLE_WRITE;
   return f;
 }
 
@@ -311,34 +321,37 @@ profile_min_key_size(uint16_t flags)
   return encoded ? (uint8_t)(encoded + 1) : 0;
 }
 
-static ble_gatt_chr_flags
-profile_chr_security(uint16_t flags)
+static uint8_t
+att_security_status(uint16_t flags, bool is_read, uint16_t conn)
 {
-  unsigned rd = profile_read_level(flags), wr = profile_write_level(flags);
-  ble_gatt_chr_flags out = 0;
-  if (rd >= 1) out |= BLE_GATT_CHR_F_READ_ENC;
-  if (rd >= 2) out |= BLE_GATT_CHR_F_READ_AUTHEN;
-  if (rd >= 3) out |= BLE_GATT_CHR_F_READ_AUTHOR;
-  if (wr >= 1) out |= BLE_GATT_CHR_F_WRITE_ENC;
-  if (wr >= 2) out |= BLE_GATT_CHR_F_WRITE_AUTHEN;
-  if (wr >= 3) out |= BLE_GATT_CHR_F_WRITE_AUTHOR;
-  return out;
+  unsigned level = is_read ? profile_read_level(flags) : profile_write_level(flags);
+  if (level == 0) return 0;
+  struct ble_gap_conn_desc desc;
+  if (ble_gap_conn_find(conn, &desc) != 0) return BLE_ATT_ERR_UNLIKELY;
+  uint8_t key_required = profile_min_key_size(flags);
+  uint8_t key_size = desc.sec_state.encrypted ? desc.sec_state.key_size : 0;
+  bool sc_missing = (flags & (is_read ? BLOB_FLAG_READ_SC : BLOB_FLAG_WRITE_SC)) &&
+                    !(desc.sec_state.encrypted && conn_sc);
+  if (level == 3) return BLE_ATT_ERR_INSUFFICIENT_AUTHOR;
+  if (level == 2 && (!desc.sec_state.authenticated || sc_missing)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+  if (key_required && (key_size == 0 || sc_missing)) return BLE_ATT_ERR_INSUFFICIENT_ENC;
+  if (key_required > key_size) return BLE_ATT_ERR_INSUFFICIENT_KEY_SZ;
+  return 0;
 }
 
 static uint8_t
 profile_dsc_flags(uint16_t flags)
 {
-  unsigned rd = profile_read_level(flags), wr = profile_write_level(flags);
   uint8_t out = 0;
   if (flags & BLOB_FLAG_READ) out |= BLE_ATT_F_READ;
   if (flags & (BLOB_FLAG_WRITE | BLOB_FLAG_WRITE_NO_RSP)) out |= BLE_ATT_F_WRITE;
-  if (rd >= 1) out |= BLE_ATT_F_READ_ENC;
-  if (rd >= 2) out |= BLE_ATT_F_READ_AUTHEN;
-  if (rd >= 3) out |= BLE_ATT_F_READ_AUTHOR;
-  if (wr >= 1) out |= BLE_ATT_F_WRITE_ENC;
-  if (wr >= 2) out |= BLE_ATT_F_WRITE_AUTHEN;
-  if (wr >= 3) out |= BLE_ATT_F_WRITE_AUTHOR;
   return out;
+}
+
+static unsigned
+profile_effective_level(unsigned level, uint8_t key)
+{
+  return level >= 2 ? level : (level == 1 && key ? 1 : 0);
 }
 
 static ble_gatt_chr_flags
@@ -348,7 +361,7 @@ profile_cccd_security(uint16_t flags)
 #if defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_ENC) && \
     defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN) && \
     defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHOR)
-  unsigned wr = profile_write_level(flags);
+  unsigned wr = profile_effective_level(profile_write_level(flags), profile_min_key_size(flags));
   if (wr >= 1) out |= BLE_GATT_CHR_F_NOTIFY_INDICATE_ENC;
   if (wr >= 2) out |= BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN;
   if (wr >= 3) out |= BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHOR;
@@ -364,11 +377,7 @@ profile_cccd_security(uint16_t flags)
 static int
 profile_permissions_supported(uint16_t flags)
 {
-  unsigned key = profile_min_key_size(flags);
   uint16_t writes = flags & (BLOB_FLAG_WRITE | BLOB_FLAG_WRITE_NO_RSP);
-  if (key && key < 7) return -1;
-  if ((flags & BLOB_FLAG_READ) && (flags & BLOB_FLAG_READ_SC)) return -1;
-  if (writes && (flags & BLOB_FLAG_WRITE_SC)) return -1;
   if ((flags & BLOB_FLAG_SIGNED_WRITE) && !writes) return -1;
   if (writes && writes != (BLOB_FLAG_WRITE | BLOB_FLAG_WRITE_NO_RSP)) return -1;
   return 0;
@@ -381,12 +390,11 @@ profile_cccd_supported(uint16_t flags)
   /* NimBLE registers automatic CCCDs with READ|WRITE and min_key_size=0;
    * only its write security requirements have per-characteristic fields. */
   if ((flags & BLOB_FLAG_OPERATIONS) != BLOB_FLAG_OPERATIONS ||
-      profile_read_level(flags) ||
-      (profile_min_key_size(flags) && profile_write_level(flags))) return -1;
+      profile_effective_level(profile_read_level(flags), profile_min_key_size(flags))) return -1;
 #if !defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_ENC) || \
     !defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN) || \
     !defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHOR)
-  if (profile_write_level(flags)) return -1;
+  if (profile_effective_level(profile_write_level(flags), profile_min_key_size(flags))) return -1;
 #endif
   return 0;
 }
@@ -579,6 +587,52 @@ validate_att_topology(const uint8_t *db, size_t db_len)
   return descs <= MAX_DSC_SLOTS ? 0 : -1;
 }
 
+static uint16_t
+profile_layout_mismatch(const uint8_t *db, size_t db_len)
+{
+  if (db == NULL) return 0;
+  uint16_t next = 1, cccd_slot = 0, value_handle = 0, expected_value = 0;
+  bool pending = false;
+  uint8_t props = 0;
+  size_t pos = 1;
+  while (pos + 2 <= db_len) {
+    uint16_t size = get_le16(db + pos);
+    if (size == 0) break;
+    uint16_t flags = get_le16(db + pos + 2);
+    uint16_t handle = get_le16(db + pos + 4);
+    uint16_t uuid_len = (flags & BLOB_FLAG_LONG_UUID) ? 16 : 2;
+    const uint8_t *uuid = db + pos + 6;
+    const uint8_t *value = uuid + uuid_len;
+    uint16_t value_len = size - 6 - uuid_len;
+    uint16_t u16 = profile_reserved_uuid16(uuid, uuid_len);
+    pos += size;
+    if (uuid_len == 16 && u16) return handle;
+    if (expected_value) {
+      if (handle != next) return handle;
+      expected_value = 0;
+      next++;
+      if (props & 0x30) {
+        pending = true;
+        value_handle = handle;
+        cccd_slot = next++;
+      }
+    } else if (u16 == GATT_CCCD_UUID) {
+      if (!pending || handle != cccd_slot) return handle;
+      pending = false;
+    } else {
+      if (handle != next) return handle;
+      if (pending) return value_handle;
+      next++;
+      if ((u16 == GATT_PRIMARY_SERVICE_UUID || u16 == GATT_SECONDARY_SERVICE_UUID) && value_len == 4) return handle;
+      if (u16 == GATT_CHARACTERISTIC_UUID) {
+        props = value[0];
+        expected_value = get_le16(value + 1);
+      }
+    }
+  }
+  return pending ? value_handle : 0;
+}
+
 static int
 build_att_db(const uint8_t *db, size_t db_len)
 {
@@ -617,8 +671,6 @@ build_att_db(const uint8_t *db, size_t db_len)
     if (expected_value_handle) {
       if (!cur_chr_map || handle != expected_value_handle || uuid_len != cur_chr_uuid_len ||
           memcmp(uuid, cur_chr_uuid, uuid_len) != 0) return -1;
-      cur_chr->flags |= profile_chr_security(flags);
-      cur_chr->min_key_size = profile_min_key_size(flags);
       cur_chr_map->att_flags = flags;
       cur_chr_map->static_value = value;
       cur_chr_map->static_len = value_len;
@@ -666,7 +718,6 @@ build_att_db(const uint8_t *db, size_t db_len)
       if (cur_chr->descriptors == NULL) cur_chr->descriptors = dsc;
       dsc->uuid = alloc_uuid(uuid, uuid_len);
       dsc->att_flags = profile_dsc_flags(flags);
-      dsc->min_key_size = profile_min_key_size(flags);
       dsc->access_cb = gatt_access_cb;
       dsc->arg = m;
       if (dsc->uuid == NULL) return -1;
@@ -852,6 +903,7 @@ int
 picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
 {
   (void)arg;
+  int rc = 0;
   if (!picoruby_ble_connection_gate_enter()) return 0;
   switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
@@ -867,6 +919,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           }
           break;
         }
+        conn_sc = false;
         picoruby_ble_central_reset_request();
         if (role == BLE_ROLE_CENTRAL) {
           struct ble_gap_conn_desc desc;
@@ -906,6 +959,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         }
         break;
       }
+      conn_sc = false;
       picoruby_ble_central_reset_request();
       if (role == BLE_ROLE_PERIPHERAL || role == BLE_ROLE_CENTRAL) {
         synth_disconnection_complete(event->disconnect.conn.conn_handle,
@@ -927,6 +981,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       break;
     case BLE_GAP_EVENT_SUBSCRIBE: {
       if (role != BLE_ROLE_PERIPHERAL || !picoruby_ble_connection_matches(event->subscribe.conn_handle)) break;
+      if (event->subscribe.reason == BLE_GAP_SUBSCRIBE_REASON_TERM) break;
       attr_map_t *e = find_map_by_nimble(event->subscribe.attr_handle);
       if (e && e->cccd_ruby_handle) {
         uint8_t v[2] = { 0x00, 0x00 };
@@ -935,6 +990,26 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         if (picoruby_nimble_enqueue_write(e->cccd_ruby_handle, v, 2) != 0) {
           picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_WORK_LOST);
         }
+      }
+      break;
+    }
+    case BLE_GAP_EVENT_ENC_CHANGE:
+      if (picoruby_ble_connection_matches(event->enc_change.conn_handle)) {
+        conn_sc = false;
+        struct ble_gap_conn_desc desc;
+        if (event->enc_change.status == 0 && ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
+          struct ble_store_key_sec key = { .peer_addr = desc.peer_id_addr };
+          struct ble_store_value_sec bond;
+          conn_sc = ble_store_read_peer_sec(&key, &bond) == 0 && bond.ltk_present && bond.sc;
+        }
+      }
+      break;
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+      struct ble_gap_conn_desc desc;
+      if (picoruby_ble_connection_matches(event->repeat_pairing.conn_handle) &&
+          ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
+        ble_store_util_delete_peer(&desc.peer_id_addr);
+        rc = BLE_GAP_REPEAT_PAIRING_RETRY;
       }
       break;
     }
@@ -968,7 +1043,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       break;
   }
   picoruby_ble_connection_gate_exit();
-  return 0;
+  return rc;
 }
 
 static void
@@ -1043,6 +1118,10 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
     free(owned_profile_data);
     owned_profile_data = NULL;
     return -1;
+  }
+  uint16_t mismatch = profile_layout_mismatch(replacement, len);
+  if (mismatch) {
+    ESP_LOGW(BLE_TAG, "GATT layout differs from profile at handle %u", (unsigned)mismatch);
   }
   return picoruby_nimble_start(register_services);
 }

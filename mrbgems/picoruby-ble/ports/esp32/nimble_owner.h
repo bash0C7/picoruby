@@ -62,7 +62,7 @@ void picoruby_nimble_record_copy_failure(void);
 // process累積のLE回数と飽和flag。outは5byte以上。new/start/同期成功では消去しない。
 void picoruby_nimble_copy_host_reset_snapshot(uint8_t *out);
 void picoruby_nimble_reset_events(void);
-#define PICORUBY_NIMBLE_WRITE_MAX 256
+#define PICORUBY_NIMBLE_WRITE_MAX 512
 /* VM専用、非再入、peekからcommitまで同時consumerなし。copyは呼出元のnative領域。 */
 typedef struct {
   uint32_t queue_generation;
