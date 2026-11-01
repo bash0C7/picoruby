@@ -23,14 +23,16 @@ BLE_central_set_scan_params(uint8_t scan_type, uint16_t scan_interval, uint16_t 
   gap_set_scan_params(scan_type, scan_interval, scan_window, scanning_filter_policy);
 }
 
-void
+int
 BLE_central_start_scan(void){
   gap_start_scan();
+  return 0;
 }
 
-void
+int
 BLE_central_stop_scan(void){
   gap_stop_scan();
+  return 0;
 }
 
 uint8_t

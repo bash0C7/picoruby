@@ -96,7 +96,7 @@ MyScanner.new.scan(scan_type: :passive, timeout_ms: 10000)
 - `packet_callback(event_packet)` - Override to handle BTstack events
 - `heartbeat_callback()` - Override; called about once a second while the loop runs
 - `gap_local_bd_addr()` - Get local Bluetooth address
-- `hci_power_control(power_mode)` - Control HCI power state
+- `hci_power_control(power_mode)` - Control HCI power state: `HCI_POWER_OFF`, `HCI_POWER_ON`, or `HCI_POWER_SLEEP`. Returns `0` when accepted; invalid modes raise `ArgumentError`, and native failures raise `RuntimeError`. ESP32 does not support SLEEP and raises `RuntimeError` without powering off.
 
 ### Peripheral Methods
 
@@ -120,6 +120,14 @@ MyScanner.new.scan(scan_type: :passive, timeout_ms: 10000)
 - `add_service(type, uuid) { block }` - Add service
 - `add_characteristic(properties, uuid, permissions, initial_value) { block }` - Add characteristic
 - `add_descriptor(properties, uuid, value)` - Add descriptor
+
+
+ESP32でのprofile検証:
+
+- 各characteristic宣言の直後には、宣言したhandleとUUIDが一致するvalue entryが必要です。RBSとbuilderは`nil`の初期値を許しますが、その場合builderはvalue entryを省略します。この未完の宣言はESP32の初期化で失敗します。初期値が空の動的characteristicには、空String (`""`) と`DYNAMIC`を指定してください。
+- handleが0・重複・逆順の場合、所属のない属性、未完の宣言、adapterの定義・map・read mirror容量超過も、現在の登録を停止する前に拒否します。primary/secondary service、空service、通常のdescriptor、16/32/128-bitのbuilder UUIDは引き続き利用できます。
+- GATTの予約UUIDは16-bit表記とBluetooth-base128表記を同義として構造を分類します（CCCDの重複検査・自動生成CCCDへの対応づけ・Include-serviceの拒否を含む）。通常のvendor UUID、Stringのhandle_tableキー、宣言とvalueのUUID bytes、value propertiesは変更しません。
+- raw profileのInclude-service宣言は、このadapterには対応する変換がないため拒否します。CCCDは、`NOTIFY`または`INDICATE`のcharacteristicごとに、初期値が2バイトのゼロである単一のdescriptorをNimBLEの自動生成CCCDへ対応づけます。重複、異なる長さ、ゼロでない初期値、notify/indicateのないCCCDは拒否します。
 
 ### BLE::AdvertisingData
 

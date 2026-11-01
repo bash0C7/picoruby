@@ -11,6 +11,8 @@ class BLE
   HCI_POWER_ON: Integer
   HCI_POWER_SLEEP: Integer
 
+  EVENT_POLL_INTERVAL_MS: Integer
+
   CLIENT_CHARACTERISTIC_CONFIGURATION: Integer
   CHARACTERISTIC_DATABASE_HASH: Integer
 
@@ -54,46 +56,64 @@ class BLE
   WRITE_PERMISSION_BIT_1:      Integer
   READ_PERMISSION_SC:          Integer
   WRITE_PERMISSION_SC:         Integer
-  CYW43_WL_GPIO_LED_PIN: Integer
 
   GATT_PRIMARY_SERVICE_UUID: Integer
   GATT_SECONDARY_SERVICE_UUID: Integer
   GAP_SERVICE_UUID: Integer
   GATT_SERVICE_UUID: Integer
   GAP_DEVICE_NAME_UUID: Integer
-  ATT_PROPERTY_READ: Integer
   GATT_CHARACTERISTIC_UUID: Integer
 
   @led: CYW43::GPIO | nil
   @led_on: bool
-  @ensure_proc: Proc
+  @ensure_proc: Proc | nil
   @event_queue: Task::Queue
   @write_values: Hash[Integer, Array[String]]
   @read_values: Hash[Integer, String]
+  @last_event_rejection_snapshot: String | nil
+  @ble_initialized: bool
 
   type role_t = :central | :peripheral | :observer | :broadcaster
   attr_accessor debug: bool
   attr_reader role: role_t
 
   def initialize: (role_t role, ?(String|nil) profile_data) -> void
-  def ensure: () { () -> void }-> void
+  def ensure: () ?{ () -> void } -> (Proc | nil)
   private def _init: (String | nil) -> void
+  private def _native_ready: () -> bool
+  def control_fault: () -> (Integer | nil)
+  private def _check_control_fault: () -> nil
+  private def _event_rejection_snapshot: () -> (String | nil)
+  private def _observe_event_rejections: () -> (String | nil)
+  def event_rejection_snapshot: () -> (String | nil)
+  def event_rejection_observation_supported?: () -> bool
+  def host_reset_snapshot: () -> (String | nil)
+  def advertising_failure_snapshot: () -> (String | nil)
   private def _event_popped: () -> nil
-  private def _event_queue_cleared: () -> nil
+  private def _event_queue_cleared: (?Task::Queue expected_queue) -> nil
+  private def _check_registration: (Task::Queue expected_queue) -> nil
+  private def _power_control_registration: (Task::Queue expected_queue, Integer power_mode) -> bool
   def debug_puts: (*untyped) -> nil
+  # 0=OFF, 1=ON, 2=SLEEP. ESP32 rejects SLEEP with RuntimeError.
+  # Returns 0 after native acceptance; invalid modes raise ArgumentError,
+  # and native failures raise RuntimeError.
   def hci_power_control: (Integer power_mode) -> 0
   def start: (?(Integer | nil) timeout_ms, ?(Symbol | nil)) -> Integer
   def packet_callback: (String) -> void
   def heartbeat_callback: () -> void
   def blink_led: () -> void
   def gap_local_bd_addr: () -> String
+  # ATT handles are 1..0xffff; pop returns nil for an invalid handle.
   def pop_write_value: (Integer handle) -> (String|nil)
-  def push_read_value: (Integer handle, String value) -> void
-  def gap_connect: (String addr, Integer addr_time) -> Integer
+  # Values must fit 65535 bytes; ESP32 also enforces its read mirror capacity.
+  def push_read_value: (Integer handle, String value) -> String
+  # addr is exactly 6 bytes; addr_type is 0..3.
+  def gap_connect: (String addr, Integer addr_type) -> Integer
 
   class Utils
     def self.bd_addr_to_str: (String) -> String
-    def self.uuid: (untyped) -> String
+    # Integer UUIDs are 0..0xffff; String UUIDs must contain exactly 16 hex pairs.
+    def self.uuid: (Integer | String) -> String
     def self.reverse_128: (String|nil) -> String
     def self.uuid128_to_uuid32: (String) -> (Integer|nil)
     def self.int16_to_little_endian: (Integer) -> String
@@ -110,7 +130,7 @@ class BLE
     attr_reader event_type: (Symbol|String)
     attr_reader address_type_code: Integer
     attr_reader address: String
-    attr_reader rssi: Integer | nil
+    attr_reader rssi: Integer
     attr_reader reports: report_t
     def initialize: (String) -> void
     def format: () -> String
@@ -137,8 +157,8 @@ class BLE
     def push_handle: () -> String
     def seek_handle: () -> String
     def add_line: (String) -> void
-    def add_service: (uuid_t, uuid_t) ?{ (GattDatabase) -> void } -> void
-    def add_characteristic: (properties_t, uuid_t, properties_t, String) ?{ (GattDatabase) -> void } -> void
+    def add_service: (Integer, uuid_t) ?{ (GattDatabase) -> void } -> void
+    def add_characteristic: (properties_t, uuid_t, properties_t, String | nil) ?{ (GattDatabase) -> void } -> void
     def add_descriptor: (properties_t, uuid_t, ?(String)) -> void
     def uuid2str: (uuid_t) -> String
     def att_flags: (Integer) -> Integer
@@ -146,17 +166,18 @@ class BLE
     def flag_by_uuid: (uuid_t, Integer) -> String
   end
 
-  def advertise: (String | nil) -> 0
+  def advertise: (String | nil) -> Integer
 
   # class Peripheral < BLE
-    def peripheral_advertise: (String | nil) -> 0
-    def notify: (Integer) -> 0
+    def peripheral_advertise: (String | nil) -> Integer
+    # ATT handle is 1..0xffff.
+    def notify: (Integer) -> Integer
 
     def request_can_send_now_event: () -> 0
   # end
 
   # class Broadcaster < BLE
-    def broadcaster_advertise: (String | nil) -> 0
+    def broadcaster_advertise: (String | nil) -> Integer
   # end
 
   # class Observer < BLE::Central
@@ -219,7 +240,7 @@ class BLE
     attr_reader state: Symbol
     attr_reader services: Array[service_t]
 
-    def restrict_central: () -> void
+    def restrict_central: () -> nil
     def reset_state: () -> Symbol
     def scan: (
       ?scan_type: scan_type_t,
@@ -228,27 +249,31 @@ class BLE
       ?timeout_ms: Integer|nil,
       ?stop_state: Symbol,
       ?debug: bool
-    ) -> void
+    ) -> Symbol
     def advertising_report_callback: (BLE::AdvertisingReport) -> void
+    # Scan fields must fit uint16; SDK-specific validation/defaults still apply.
     def set_scan_params: (scan_type_t scan_type, Integer scan_interval, Integer scan_window) -> 0
-    def start_scan: () -> 0
-    def stop_scan: () -> 0
+    def start_scan: () -> Integer
+    def stop_scan: () -> Integer
     def connect: (BLE::AdvertisingReport) -> bool
-    def get_packet: () -> String
+    # Connection 0 is valid; 0xffff is the invalid sentinel and is rejected.
+    # ATT handles are 1..0xffff; write data must fit 65535 bytes.
     def discover_primary_services: (Integer conn_handle) -> Integer
     def read_value_of_characteristic_using_value_handle: (Integer conn_handle, Integer value_handle) -> Integer
     def discover_characteristic_descriptors: (Integer conn_handle, Integer value_handle, Integer end_handle) -> Integer
     def discover_characteristics_for_service: (Integer conn_handle, Integer start_handle, Integer end_handle) -> Integer
     def write_value_of_characteristic_without_response: (Integer conn_handle, Integer value_handle, String data) -> Integer
     def write_characteristic_descriptor_using_descriptor_handle: (Integer conn_handle, Integer descriptor_handle, String data) -> Integer
-    private def gatt_event_int16: (String event_packet, Integer offset) -> Integer
-    private def gatt_event_uuid128: (String event_packet, Integer offset) -> String
-    private def gatt_event_value: (String event_packet) -> (String | nil)
+    def gatt_event_int16: (String event_packet, Integer offset) -> Integer
+    def gatt_event_uuid128: (String event_packet, Integer offset) -> String
+    def gatt_event_value: (String event_packet) -> (String | nil)
   # end
 
   class AdvertisingData
+    def initialize: () -> void
     attr_reader data: String
-    def add: (Integer, *untyped) -> void
+    # Type is 0..255; Integer payloads are unsigned; each AD field fits 255 bytes.
+    def add: (Integer, *(String | Integer | nil)) -> Integer
     def self.build: () { (AdvertisingData) -> void } -> String
   end
 end

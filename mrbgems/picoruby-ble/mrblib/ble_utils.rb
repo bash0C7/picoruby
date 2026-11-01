@@ -9,12 +9,16 @@ class BLE
     def self.uuid(value)
       case value
       when Integer
+        if value < 0 || value > 0xffff
+          raise ArgumentError, "integer UUID must fit 16 bits"
+        end
         str = int16_to_little_endian(value)
       when String
-        # Simply trustily assumes "cd833ba3-97c5-4615-a2a0-a6c3e56b24b2" format
+        # Preserve optional separators, but consume the complete UUID input.
         str = "_" * 16
         i = 0
-        15.downto(0) do |j|
+        j = 15
+        while j >= 0
           i += 1 if value[i] == "-"
           c = value[i, 2].to_s
           if c.length != 2
@@ -28,7 +32,9 @@ class BLE
             break 0
           end
           i += 2
+          j -= 1
         end
+        str = "" if i != value.bytesize
       else
         str = ""
       end

@@ -27,13 +27,27 @@ class BLE
         raise ArgumentError, "packet length must be 14 or more"
       end
       event_code = packet.getbyte(2)
-      @event_type = EVENT_TYPE[event_code || -1] || sprintf("0x%02x", event_code)
+      @event_type = case event_code
+      when 0x00
+        :connectable_advertising_ind
+      when 0x01
+        :connectable_directed_advertising_ind
+      when 0x02
+        :scannable_advertising_ind
+      when 0x03
+        :non_connectable_advertising_ind
+      when 0x04
+        :scan_response
+      else
+        sprintf("0x%02x", event_code)
+      end
       @address_type_code = packet.getbyte(3) || 99
       @address = ""
       5.downto(0) do |i|
         @address << [packet.getbyte(4 + i) || 0].pack('C')
       end
-      @rssi = (packet.getbyte(10) || 0) - 256
+      rssi = packet.getbyte(10) || 0
+      @rssi = (rssi & 0x80) == 0 ? rssi : rssi - 256
       data_length = packet.getbyte(11) || 0
       @reports = inspect_reports(packet.byteslice(12, data_length) || raise(ArgumentError, "packet too short"))
     end

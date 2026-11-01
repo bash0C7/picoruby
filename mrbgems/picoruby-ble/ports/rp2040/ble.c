@@ -137,8 +137,9 @@ heartbeat_handler(struct btstack_timer_source *ts)
 }
 
 int
-BLE_init(const uint8_t *profile_data, int ble_role)
+BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
 {
+  if (BLE_profile_extent(profile_data, profile_len, NULL) < 0) return -1;
   l2cap_init();
   sm_init();
 
@@ -182,10 +183,10 @@ BLE_init(const uint8_t *profile_data, int ble_role)
   return 0;
 }
 
-void
+int
 BLE_hci_power_control(uint8_t power_mode)
 {
-  hci_power_control(power_mode);
+  int result = hci_power_control(power_mode);
   if (power_mode == HCI_POWER_ON) {
     heartbeat_active = true;
     btstack_run_loop_remove_timer(&heartbeat);
@@ -194,12 +195,14 @@ BLE_hci_power_control(uint8_t power_mode)
   } else {
     heartbeat_active = false;
   }
+  return result;
 }
 
-void
+int
 BLE_gap_local_bd_addr(uint8_t *local_addr)
 {
   gap_local_bd_addr(local_addr);
+  return 0;
 }
 
 uint8_t

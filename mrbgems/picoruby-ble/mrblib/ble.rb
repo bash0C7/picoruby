@@ -16,6 +16,8 @@ class BLE
   HCI_POWER_ON = 1
   HCI_POWER_SLEEP = 2
 
+  EVENT_POLL_INTERVAL_MS = 100
+
   # GATT Characteristic Properties
   BROADCAST =                   0x01
   READ =                        0x02
@@ -79,6 +81,7 @@ class BLE
   CHARACTERISTIC_DATABASE_HASH = 0x2b2a
 
   def initialize(role, profile_data = nil)
+    @ble_initialized = false
     @role = role
     @debug = false
     @event_queue = Task::Queue.new
@@ -87,16 +90,28 @@ class BLE
     # together with this instance.
     @write_values = {}
     @read_values = {}
+    @last_event_rejection_snapshot = nil
     if Object.const_defined?(:CYW43) && !CYW43.init
       puts "Failed to initialize CYW43"
       return # raising an exception here may cause a crash
     end
     _init(profile_data)
     init_central if @role == :central
+    @ble_initialized = true
   end
 
   attr_reader :role
   attr_accessor :debug
+
+  # nativeから取得した最新のprocess累積。sessionの拒否件数ではない。
+  def event_rejection_snapshot
+    snapshot = _event_rejection_snapshot
+    snapshot&.dup
+  end
+
+  def event_rejection_observation_supported?
+    !_event_rejection_snapshot.nil?
+  end
 
   def advertise(adv_data)
     case @role
@@ -124,6 +139,13 @@ class BLE
   end
 
   def start(timeout_ms = nil, stop_state = :no_stop)
+    start_entered = false
+    # This existing Queue is also the identity of this initialization.
+    event_queue = @event_queue
+    _check_control_fault
+    raise 'BLE init failed' unless @ble_initialized && _native_ready
+    _observe_event_rejections
+    poll_interval_ms = @last_event_rejection_snapshot ? EVENT_POLL_INTERVAL_MS : nil
     if timeout_ms
       debug_puts "Starting for #{timeout_ms} ms"
     else
@@ -131,29 +153,42 @@ class BLE
     end
     started_at = Machine.board_millis
     total_timeout_ms = 0
-    @event_queue.clear
-    _event_queue_cleared
-    hci_power_control(HCI_POWER_ON)
+    _event_queue_cleared(event_queue)
+    _check_registration(event_queue)
+    start_entered = true
+    raise 'BLE start owner registration changed' unless _power_control_registration(event_queue, HCI_POWER_ON)
     while true
+      _check_registration(event_queue)
+      _check_control_fault
       total_timeout_ms = Machine.board_millis - started_at
+      _observe_event_rejections if poll_interval_ms
       break if timeout_ms && timeout_ms <= total_timeout_ms
       if @state == stop_state
         puts "Stopped by state: #{stop_state}"
         break
       end
-      wait_ms = timeout_ms ? timeout_ms - total_timeout_ms : nil
-      event = @event_queue.pop(timeout_ms: wait_ms)
+      wait_ms = timeout_ms ? timeout_ms - total_timeout_ms : poll_interval_ms
+      if poll_interval_ms && poll_interval_ms < wait_ms
+        wait_ms = poll_interval_ms
+      end
+      event = event_queue.pop(timeout_ms: wait_ms)
+      # pop yields; another task may have replaced the hardware owner.
+      _check_registration(event_queue)
       _event_popped if event
       if event.is_a?(String)
         packet_callback(event)
       elsif event
         heartbeat_callback
       end
+      # User callbacks may construct another BLE instance before returning.
+      _check_registration(event_queue)
+      _check_control_fault
     end
     total_timeout_ms = Machine.board_millis - started_at
     return total_timeout_ms
   ensure
-    hci_power_control(HCI_POWER_OFF)
+    # An old loop must never power off the replacement instance.
+    _power_control_registration(event_queue, HCI_POWER_OFF) if start_entered
     @ensure_proc&.call
     debug_puts "Stopped"
   end
@@ -163,4 +198,15 @@ class BLE
     STDOUT.puts(*args) if @debug
   end
 
+  private
+
+  def _check_control_fault
+    reason = control_fault
+    return if reason.nil? || reason == 0
+    raise "BLE session cancelled (control fault #{reason}); initialize BLE again"
+  end
+
+  def _observe_event_rejections
+    @last_event_rejection_snapshot = _event_rejection_snapshot
+  end
 end

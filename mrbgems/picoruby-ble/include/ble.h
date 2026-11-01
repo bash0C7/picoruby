@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "ble_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,11 +19,15 @@ enum BLE_role_t {
 
 #if defined(PICORB_VM_MRUBY)
 #include "mruby.h"
+bool mrb_ble_active_owner(mrb_state *mrb, mrb_value self);
+void mrb_ble_check_active_owner(mrb_state *mrb, mrb_value self);
 void mrb_init_class_BLE_Peripheral(mrb_state *mrb, struct RClass *class_BLE);
 void mrb_init_class_BLE_Broadcaster(mrb_state *mrb, struct RClass *class_BLE);
 void mrb_init_class_BLE_Central(mrb_state *mrb, struct RClass *class_BLE);
 #elif defined(PICORB_VM_MRUBYC)
 #include "mrubyc.h"
+bool mrbc_ble_active_owner(mrbc_value *self);
+bool mrbc_ble_check_active_owner(mrbc_vm *vm, mrbc_value *self);
 void mrbc_init_class_BLE_Peripheral(mrbc_vm *vm, mrbc_class *class_BLE);
 void mrbc_init_class_BLE_Broadcaster(mrbc_vm *vm, mrbc_class *class_BLE);
 void mrbc_init_class_BLE_Central(mrbc_vm *vm, mrbc_class *class_BLE);
@@ -34,9 +39,27 @@ typedef struct {
   uint16_t size;
 } BLE_read_value_t;
 
-int BLE_init(const uint8_t *profile, int ble_role);
-void BLE_hci_power_control(uint8_t power_mode);
-void BLE_gap_local_bd_addr(uint8_t *local_addr);
+#ifdef PICORB_PLATFORM_ESP32
+#include "../ports/esp32/nimble_owner.h"
+#endif
+
+static inline bool BLE_ready(void)
+{
+#ifdef PICORB_PLATFORM_ESP32
+  return picoruby_nimble_ready();
+#else
+  return true;
+#endif
+}
+
+int BLE_init(const uint8_t *profile, size_t profile_len, int ble_role);
+enum BLE_power_control_result_t {
+  BLE_POWER_CONTROL_INVALID = -1,
+  BLE_POWER_CONTROL_UNSUPPORTED = -2,
+  BLE_POWER_CONTROL_NOT_READY = -3
+};
+int BLE_hci_power_control(uint8_t power_mode);
+int BLE_gap_local_bd_addr(uint8_t *local_addr);
 int BLE_push_event(uint8_t *data, uint16_t size);
 int BLE_heartbeat(void);
 int BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size);

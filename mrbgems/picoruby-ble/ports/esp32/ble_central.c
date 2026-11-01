@@ -11,6 +11,8 @@
 #include "ble_common.h"
 #include "nimble_owner.h"
 
+static ble_addr_t central_connect_peer;
+
 static struct ble_gap_disc_params scan_params = {
   .itvl = 0x60,
   .window = 0x30,
@@ -33,22 +35,27 @@ BLE_central_set_scan_params(uint8_t scan_type, uint16_t scan_interval, uint16_t 
   scan_params.filter_duplicates = 0;
 }
 
-void
+int
 BLE_central_start_scan(void)
 {
-  ble_gap_disc(picoruby_nimble_own_addr_type(), BLE_HS_FOREVER,
+  return ble_gap_disc(picoruby_nimble_own_addr_type(), BLE_HS_FOREVER,
                &scan_params, picoruby_ble_gap_event, NULL);
 }
 
-void
+int
 BLE_central_stop_scan(void)
 {
-  ble_gap_disc_cancel();
+  return ble_gap_disc_cancel();
 }
 
 uint8_t
 BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
 {
+  if (!picoruby_ble_connection_gate_enter()) return 0xff;
+  if (!picoruby_nimble_ready() || !picoruby_ble_connection_begin_connect()) {
+    picoruby_ble_connection_gate_exit();
+    return (uint8_t)BLE_HS_EBUSY;
+  }
   if (ble_gap_disc_active()) {
     ble_gap_disc_cancel();
   }
@@ -56,6 +63,7 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
   ble_addr_t peer;
   peer.type = addr_type;
   for (int i = 0; i < 6; i++) peer.val[i] = addr[5 - i];
+  central_connect_peer = peer;
 
   struct ble_gap_conn_params params = {
     .scan_itvl = 60000 / 625,
@@ -70,6 +78,19 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
 
   int rc = ble_gap_connect(picoruby_nimble_own_addr_type(), &peer, 30000,
                            &params, picoruby_ble_gap_event, NULL);
+  if (rc != 0) picoruby_ble_connection_end_connect();
+  picoruby_ble_connection_gate_exit();
   if (rc == 0) return 0;
   return (rc & 0xff) ? (uint8_t)rc : 0xff;
+}
+
+/* Runs after one complete host event, with the connection gate held. A
+ * physical connection can exist before the application CONNECT callback. */
+bool
+picoruby_ble_central_reconcile_connect(void)
+{
+  if (!picoruby_ble_connection_connect_pending() || ble_gap_conn_active()) return false;
+  if (ble_gap_conn_find_by_addr(&central_connect_peer, NULL) != BLE_HS_ENOTCONN) return false;
+  picoruby_ble_connection_end_connect();
+  return true;
 }

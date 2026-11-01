@@ -5,8 +5,13 @@
 static mrb_value
 mrb_discover_primary_services(mrb_state *mrb, mrb_value self)
 {
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
   mrb_int conn_handle;
   mrb_get_args(mrb, "i", &conn_handle);
+  if (conn_handle < 0 || conn_handle > 0xfffe) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
   uint8_t res = BLE_discover_primary_services((uint16_t)conn_handle);
   return mrb_int_value(mrb, res);
 }
@@ -14,8 +19,13 @@ mrb_discover_primary_services(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_discover_characteristics_for_service(mrb_state *mrb, mrb_value self)
 {
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
   mrb_int conn_handle, start_handle, end_handle;
   mrb_get_args(mrb, "iii", &conn_handle, &start_handle, &end_handle);
+  if (conn_handle < 0 || conn_handle > 0xfffe || start_handle < 1 || start_handle > 0xffff || end_handle < 1 || end_handle > 0xffff) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
 
   uint8_t res = BLE_discover_characteristics_for_service(
     (uint16_t)conn_handle,
@@ -28,8 +38,13 @@ mrb_discover_characteristics_for_service(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_read_value_of_characteristic_using_value_handle(mrb_state *mrb, mrb_value self)
 {
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
   mrb_int conn_handle, value_handle;
   mrb_get_args(mrb, "ii", &conn_handle, &value_handle);
+  if (conn_handle < 0 || conn_handle > 0xfffe || value_handle < 1 || value_handle > 0xffff) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
 
   uint8_t res = BLE_read_value_of_characteristic_using_value_handle(
     (uint16_t)conn_handle,
@@ -41,8 +56,13 @@ mrb_read_value_of_characteristic_using_value_handle(mrb_state *mrb, mrb_value se
 static mrb_value
 mrb_discover_characteristic_descriptors(mrb_state *mrb, mrb_value self)
 {
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
   mrb_int conn_handle, value_handle, end_handle;
   mrb_get_args(mrb, "iii", &conn_handle, &value_handle, &end_handle);
+  if (conn_handle < 0 || conn_handle > 0xfffe || value_handle < 1 || value_handle > 0xffff || end_handle < 1 || end_handle > 0xffff) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
 
   uint8_t res = BLE_discover_characteristic_descriptors(
     (uint16_t)conn_handle,
@@ -55,9 +75,15 @@ mrb_discover_characteristic_descriptors(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_write_value_of_characteristic_without_response(mrb_state *mrb, mrb_value self)
 {
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
   mrb_int conn_handle, value_handle;
   mrb_value data;
   mrb_get_args(mrb, "iiS", &conn_handle, &value_handle, &data);
+  if (conn_handle < 0 || conn_handle > 0xfffe || value_handle < 1 || value_handle > 0xffff) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
+  if (RSTRING_LEN(data) > UINT16_MAX) mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE write value exceeds 65535 bytes");
   uint8_t res = BLE_write_value_of_characteristic_without_response(
     (uint16_t)conn_handle,
     (uint16_t)value_handle,
@@ -70,9 +96,15 @@ mrb_write_value_of_characteristic_without_response(mrb_state *mrb, mrb_value sel
 static mrb_value
 mrb_write_characteristic_descriptor_using_descriptor_handle(mrb_state *mrb, mrb_value self)
 {
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
   mrb_int conn_handle, descriptor_handle;
   mrb_value data;
   mrb_get_args(mrb, "iiS", &conn_handle, &descriptor_handle, &data);
+  if (conn_handle < 0 || conn_handle > 0xfffe || descriptor_handle < 1 || descriptor_handle > 0xffff) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
+  if (RSTRING_LEN(data) > UINT16_MAX) mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE write value exceeds 65535 bytes");
   uint8_t res = BLE_write_characteristic_descriptor_using_descriptor_handle(
     (uint16_t)conn_handle,
     (uint16_t)descriptor_handle,
@@ -92,9 +124,13 @@ mrb_write_characteristic_descriptor_using_descriptor_handle(mrb_state *mrb, mrb_
 static mrb_value
 mrb_set_scan_params(mrb_state *mrb, mrb_value self)
 {
+  mrb_ble_check_active_owner(mrb, self);
   mrb_value scan_type;
   mrb_int scan_interval, scan_window, scan_type_num;
   mrb_get_args(mrb, "oii", &scan_type, &scan_interval, &scan_window);
+  if (scan_interval < 0 || scan_interval > UINT16_MAX || scan_window < 0 || scan_window > UINT16_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
 
   if (!mrb_symbol_p(scan_type)) {
     mrb_raise(mrb, E_TYPE_ERROR, "wrong type of scan_type");
@@ -113,24 +149,34 @@ mrb_set_scan_params(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_start_scan(mrb_state *mrb, mrb_value self)
 {
-  BLE_central_start_scan();
-  return mrb_int_value(mrb, 0);
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
+  return mrb_int_value(mrb, BLE_central_start_scan());
 }
 
 static mrb_value
 mrb_stop_scan(mrb_state *mrb, mrb_value self)
 {
-  BLE_central_stop_scan();
-  return mrb_int_value(mrb, 0);
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
+  return mrb_int_value(mrb, BLE_central_stop_scan());
 }
 
 static mrb_value
 mrb_gap_connect(mrb_state *mrb, mrb_value self)
 {
-  const char *addr;
+  mrb_ble_check_active_owner(mrb, self);
+  if (!BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
+  mrb_value addr;
   mrb_int addr_type;
-  mrb_get_args(mrb, "zi", &addr, &addr_type);
-  uint8_t res = BLE_central_gap_connect((const uint8_t *)addr, (uint8_t)addr_type);
+  mrb_get_args(mrb, "Si", &addr, &addr_type);
+  if (addr_type < 0 || addr_type > 0x3) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE argument out of range");
+  }
+  if (RSTRING_LEN(addr) != 6) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "address must be 6 bytes");
+  }
+  uint8_t res = BLE_central_gap_connect((const uint8_t *)RSTRING_PTR(addr), (uint8_t)addr_type);
   return mrb_int_value(mrb, res);
 }
 

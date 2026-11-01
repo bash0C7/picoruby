@@ -39,10 +39,6 @@ class BLE
     #   :TC_W4_ENABLE_NOTIFICATIONS_COMPLETE
     #   :TC_W4_READY
     @conn_handle = HCI_CON_HANDLE_INVALID
-    @characteristic_handle_ranges = []
-    @value_handles = []
-    @descriptor_handle_ranges = []
-    @descriptor_handles = []
   end
 
   attr_reader :services, :state
@@ -64,6 +60,11 @@ class BLE
 
   def reset_state
     restrict_central
+    @conn_handle = HCI_CON_HANDLE_INVALID
+    @characteristic_handle_ranges = []
+    @value_handles = []
+    @descriptor_handle_ranges = []
+    @descriptor_handles = []
     @state = :TC_OFF
   end
 
@@ -74,7 +75,10 @@ class BLE
     unless @state == :TC_W4_SCAN_RESULT
       raise "connect must be called from advertising_report_callback while scanning"
     end
-    stop_scan
+    if stop_scan != 0
+      @state = :TC_IDLE
+      return false
+    end
     err_code = gap_connect(adv_report.address, adv_report.address_type_code)
     if err_code == 0
       @state = :TC_W4_CONNECT
@@ -99,8 +103,7 @@ class BLE
       return if @state != :TC_OFF && @state != :TC_IDLE
       if event_packet.getbyte(2) == HCI_STATE_WORKING
         debug_puts "Central is up and running on: `#{Utils.bd_addr_to_str(gap_local_bd_addr)}`"
-        start_scan
-        @state = :TC_W4_SCAN_RESULT
+        @state = start_scan == 0 ? :TC_W4_SCAN_RESULT : :TC_IDLE
       else
         reset_state
       end
@@ -117,6 +120,7 @@ class BLE
           @state = :TC_IDLE
           return
         end
+        reset_state
         @conn_handle = Utils.little_endian_to_int16(event_packet.byteslice(4, 2))
         debug_puts "Connected. Handle: `#{sprintf("0x%04X", @conn_handle)}`"
         @state = :TC_W4_SERVICE_RESULT
@@ -128,12 +132,27 @@ class BLE
         end
       end
     when HCI_EVENT_DISCONNECTION_COMPLETE
+      return unless Utils.little_endian_to_int16(event_packet.byteslice(3, 2)) == @conn_handle
       debug_puts "Disconnected"
+      reset_state
       @conn_handle = HCI_CON_HANDLE_INVALID
       @state = :TC_IDLE
     when GATT_EVENT_QUERY_COMPLETE..GATT_EVENT_LONG_CHARACTERISTIC_VALUE_QUERY_RESULT
+      return if @conn_handle == HCI_CON_HANDLE_INVALID
+      return unless Utils.little_endian_to_int16(event_packet.byteslice(2, 2)) == @conn_handle
+      state = @state
+      return unless state == :TC_W4_SERVICE_RESULT ||
+                    state == :TC_W4_CHARACTERISTIC_RESULT ||
+                    state == :TC_W4_CHARACTERISTIC_VALUE_RESULT ||
+                    state == :TC_W4_ALL_CHARACTERISTIC_DESCRIPTORS_RESULT ||
+                    state == :TC_W4_CHARACTERISTIC_DESCRIPTOR_VALUE_RESULT
+      if event_type == GATT_EVENT_QUERY_COMPLETE && event_packet.getbyte(GATT_EVENT_PAYLOAD_OFFSET) != 0
+        reset_state
+        @state = :TC_IDLE
+        return
+      end
       # Build @services
-      case @state
+      case state
       when :TC_W4_SERVICE_RESULT
         case event_type
         when GATT_EVENT_SERVICE_QUERY_RESULT
@@ -153,12 +172,12 @@ class BLE
         when GATT_EVENT_QUERY_COMPLETE
           debug_puts "GATT_EVENT_QUERY_COMPLETE for service"
           if characteristic_handle_range = @characteristic_handle_ranges.shift
-            discover_characteristics_for_service(
+            err_code = discover_characteristics_for_service(
               @conn_handle,
               characteristic_handle_range[:start_handle],
               characteristic_handle_range[:end_handle]
             )
-            @state = :TC_W4_CHARACTERISTIC_RESULT
+            @state = err_code == 0 ? :TC_W4_CHARACTERISTIC_RESULT : :TC_IDLE
           else
             @state = :TC_IDLE
           end
@@ -199,14 +218,15 @@ class BLE
         when GATT_EVENT_QUERY_COMPLETE
           debug_puts "GATT_EVENT_QUERY_COMPLETE for characteristic"
           if characteristic_handle_range = @characteristic_handle_ranges.shift
-            discover_characteristics_for_service(
+            err_code = discover_characteristics_for_service(
               @conn_handle,
               characteristic_handle_range[:start_handle],
               characteristic_handle_range[:end_handle]
             )
+            @state = err_code == 0 ? :TC_W4_CHARACTERISTIC_RESULT : :TC_IDLE
           elsif value_handle = @value_handles.shift
-            read_value_of_characteristic_using_value_handle(@conn_handle, value_handle)
-            @state = :TC_W4_CHARACTERISTIC_VALUE_RESULT
+            err_code = read_value_of_characteristic_using_value_handle(@conn_handle, value_handle)
+            @state = err_code == 0 ? :TC_W4_CHARACTERISTIC_VALUE_RESULT : :TC_IDLE
           else
             @state = :TC_IDLE
           end
@@ -238,10 +258,11 @@ class BLE
           # Every read ends with its own QUERY_COMPLETE, so the next read
           # has to be issued from here and not from the VALUE_QUERY_RESULT
           if value_handle = @value_handles.shift
-            read_value_of_characteristic_using_value_handle(@conn_handle, value_handle)
+            err_code = read_value_of_characteristic_using_value_handle(@conn_handle, value_handle)
+            @state = err_code == 0 ? :TC_W4_CHARACTERISTIC_VALUE_RESULT : :TC_IDLE
           elsif handle_range = @descriptor_handle_ranges.shift
-            discover_characteristic_descriptors(@conn_handle, handle_range[:value_handle], handle_range[:end_handle])
-            @state = :TC_W4_ALL_CHARACTERISTIC_DESCRIPTORS_RESULT
+            err_code = discover_characteristic_descriptors(@conn_handle, handle_range[:value_handle], handle_range[:end_handle])
+            @state = err_code == 0 ? :TC_W4_ALL_CHARACTERISTIC_DESCRIPTORS_RESULT : :TC_IDLE
           else
             @state = :TC_IDLE
           end
@@ -275,11 +296,12 @@ class BLE
         when GATT_EVENT_QUERY_COMPLETE
           debug_puts "GATT_EVENT_QUERY_COMPLETE for characteristic descriptor"
           if handle_range = @descriptor_handle_ranges.shift
-            discover_characteristic_descriptors(@conn_handle, handle_range[:value_handle], handle_range[:end_handle])
+            err_code = discover_characteristic_descriptors(@conn_handle, handle_range[:value_handle], handle_range[:end_handle])
+            @state = err_code == 0 ? :TC_W4_ALL_CHARACTERISTIC_DESCRIPTORS_RESULT : :TC_IDLE
           elsif descriptor_handle = @descriptor_handles.shift
             # I don't know why, but read_value_of_characteristic_descriptor() doesn't work.
-            read_value_of_characteristic_using_value_handle(@conn_handle, descriptor_handle)
-            @state = :TC_W4_CHARACTERISTIC_DESCRIPTOR_VALUE_RESULT
+            err_code = read_value_of_characteristic_using_value_handle(@conn_handle, descriptor_handle)
+            @state = err_code == 0 ? :TC_W4_CHARACTERISTIC_DESCRIPTOR_VALUE_RESULT : :TC_IDLE
           else
             @state = :TC_IDLE
           end
@@ -315,7 +337,8 @@ class BLE
           debug_puts "GATT_EVENT_QUERY_COMPLETE for characteristic descriptor value"
           if descriptor_handle = @descriptor_handles.shift
             # I don't know why, but read_value_of_characteristic_descriptor() doesn't work.
-            read_value_of_characteristic_using_value_handle(@conn_handle, descriptor_handle)
+            err_code = read_value_of_characteristic_using_value_handle(@conn_handle, descriptor_handle)
+            @state = err_code == 0 ? :TC_W4_CHARACTERISTIC_DESCRIPTOR_VALUE_RESULT : :TC_IDLE
           else
             @state = :TC_IDLE
           end

@@ -2,6 +2,10 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+
 #include "../../include/ble.h"
 #include "../../include/ble_peripheral.h"
 
@@ -9,11 +13,191 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs_mbuf.h"
+#include "nimble/ble.h"
+#include "os/os_mbuf.h"
 
 #include "ble_common.h"
 #include "nimble_owner.h"
 
-uint16_t con_handle = 0xffff;
+/* All entry points take this gate before adv_mutex or SDK host locks.
+ * GAP callbacks run without the SDK host lock; synchronous SDK callbacks
+ * re-enter on this same task. Never hold this gate across stop / join. */
+static SemaphoreHandle_t connection_gate;
+static uint16_t con_handle = 0xffff;
+static bool connection_accepting;
+static bool central_connect_pending;
+/* 未生成の要求だけを保持し、生成済みCANや後続notifyの資源は予約しない。 */
+static bool send_permit_pending;
+static uint16_t send_permit_handle = 0xffff;
+
+static void
+cancel_send_permit(void)
+{
+  send_permit_pending = false;
+  send_permit_handle = 0xffff;
+}
+
+bool
+picoruby_ble_connection_gate_enter(void)
+{
+  return connection_gate != NULL &&
+         xSemaphoreTakeRecursive(connection_gate, portMAX_DELAY) == pdTRUE;
+}
+
+void
+picoruby_ble_connection_gate_exit(void)
+{
+  xSemaphoreGiveRecursive(connection_gate);
+}
+
+/* Caller holds the gate. These helpers never call the SDK or VM. */
+bool
+picoruby_ble_connection_matches(uint16_t handle)
+{
+  return connection_accepting && picoruby_nimble_ready() && handle != 0xffff && handle == con_handle;
+}
+
+bool
+picoruby_ble_connection_claim(uint16_t handle)
+{
+  if (!connection_accepting || !picoruby_nimble_ready() || con_handle != 0xffff || handle == 0xffff) return false;
+  con_handle = handle;
+  central_connect_pending = false;
+  return true;
+}
+
+bool
+picoruby_ble_connection_release(uint16_t handle)
+{
+  if (!picoruby_ble_connection_matches(handle)) return false;
+  cancel_send_permit();
+  con_handle = 0xffff;
+  return true;
+}
+
+bool
+picoruby_ble_connection_available(void)
+{
+  return connection_accepting && picoruby_nimble_ready() && con_handle == 0xffff && !central_connect_pending;
+}
+
+bool
+picoruby_ble_connection_connect_pending(void)
+{
+  return connection_accepting && central_connect_pending;
+}
+
+bool
+picoruby_ble_connection_begin_connect(void)
+{
+  if (!picoruby_ble_connection_available()) return false;
+  central_connect_pending = true;
+  return true;
+}
+
+void
+picoruby_ble_connection_end_connect(void)
+{
+  central_connect_pending = false;
+}
+
+void
+picoruby_ble_connection_close(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return;
+  cancel_send_permit();
+  connection_accepting = false;
+  central_connect_pending = false;
+  picoruby_ble_connection_gate_exit();
+}
+
+void
+picoruby_ble_connection_reopen(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return;
+  cancel_send_permit();
+  con_handle = 0xffff;
+  central_connect_pending = false;
+  connection_accepting = true;
+  picoruby_ble_connection_gate_exit();
+}
+
+uint16_t
+picoruby_ble_connection_handle_snapshot(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return 0xffff;
+  uint16_t handle = connection_accepting ? con_handle : 0xffff;
+  picoruby_ble_connection_gate_exit();
+  return handle;
+}
+
+/* 接続gate内で、最小非空notifyのpayloadと独立headerを同時に実構成する。
+ * 公開APIのみで固定SDKのl2cap_pktと同じleadingを置き、probeは送信しない。 */
+static struct os_mbuf *
+send_permit_probe(void)
+{
+  uint8_t dummy = 0;
+  struct os_mbuf *payload = ble_hs_mbuf_from_flat(&dummy, 1);
+  if (payload == NULL) return NULL;
+
+  uint16_t user_hdr_len = 0;
+#if MYNEWT_VAL(BLE_CONTROLLER)
+  user_hdr_len = sizeof(struct ble_mbuf_hdr);
+#endif
+  struct os_mbuf *header = os_msys_get_pkthdr(0, user_hdr_len);
+  if (header == NULL) {
+    os_mbuf_free_chain(payload);
+    return NULL;
+  }
+
+  uint16_t leading = 4 + 4 + 1; /* ACL + L2CAP + HCI packet indicator */
+#if !CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE
+  leading += BLE_HS_CTRL_DATA_HDR_SZ;
+#endif
+  if (OS_MBUF_TRAILINGSPACE(header) < leading) {
+    os_mbuf_free_chain(header);
+    os_mbuf_free_chain(payload);
+    return NULL;
+  }
+  header->om_data += leading;
+  if (os_mbuf_extend(header, 3) == NULL) {
+    os_mbuf_free_chain(header);
+    os_mbuf_free_chain(payload);
+    return NULL;
+  }
+  os_mbuf_concat(header, payload);
+  return header;
+}
+
+void
+picoruby_ble_peripheral_service_send_permit(void)
+{
+  if (connection_gate == NULL ||
+      xSemaphoreTakeRecursive(connection_gate, 0) != pdTRUE) return;
+  if (!send_permit_pending) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
+  if (!picoruby_ble_connection_matches(send_permit_handle)) {
+    cancel_send_permit();
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
+  struct os_mbuf *probe = send_permit_probe();
+  if (probe == NULL) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
+  uint8_t p[4] = { EVT_ATT_CAN_SEND_NOW, 2,
+                 send_permit_handle & 0xff, send_permit_handle >> 8 };
+  int result = picoruby_nimble_enqueue_event(p, sizeof(p));
+  cancel_send_permit();
+  os_mbuf_free_chain(probe);
+  if (result != PICORUBY_NIMBLE_EVENT_ACCEPTED) {
+    picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_WORK_LOST);
+  }
+  picoruby_ble_connection_gate_exit();
+}
 
 #define ADV_INTERVAL_0625MS 800
 
@@ -21,10 +205,70 @@ static uint8_t adv_data_buf[31];
 static uint8_t adv_data_len = 0;
 static bool adv_connectable = false;
 static bool adv_wanted = false;
+static SemaphoreHandle_t adv_mutex;
+
+// Process-lifetime SDK operation failures; this does not assert advertising is off.
+static uint32_t advertising_failure_count;
+static int32_t advertising_failure_last_rc;
+static uint8_t advertising_failure_stage;
+static uint8_t advertising_failure_flags;
+static portMUX_TYPE advertising_failure_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void
+record_advertising_failure(int rc, uint8_t stage)
+{
+  taskENTER_CRITICAL(&advertising_failure_mux);
+  if (advertising_failure_count == UINT32_MAX) advertising_failure_flags |= PICORUBY_BLE_ADVERTISING_FAILURE_SATURATED;
+  else advertising_failure_count++;
+  advertising_failure_last_rc = (int32_t)rc;
+  advertising_failure_stage = stage;
+  taskEXIT_CRITICAL(&advertising_failure_mux);
+}
+
+void
+picoruby_ble_copy_advertising_failure_snapshot(uint8_t *out)
+{
+  taskENTER_CRITICAL(&advertising_failure_mux);
+  uint32_t count = advertising_failure_count;
+  uint32_t rc = (uint32_t)advertising_failure_last_rc;
+  uint8_t stage = advertising_failure_stage;
+  uint8_t flags = advertising_failure_flags;
+  taskEXIT_CRITICAL(&advertising_failure_mux);
+  out[0] = count & 0xff;
+  out[1] = (count >> 8) & 0xff;
+  out[2] = (count >> 16) & 0xff;
+  out[3] = (count >> 24) & 0xff;
+  out[4] = rc & 0xff;
+  out[5] = (rc >> 8) & 0xff;
+  out[6] = (rc >> 16) & 0xff;
+  out[7] = (rc >> 24) & 0xff;
+  out[8] = stage;
+  out[9] = flags;
+}
+
+int
+picoruby_ble_peripheral_setup(void)
+{
+  if (connection_gate == NULL) connection_gate = xSemaphoreCreateRecursiveMutex();
+  if (connection_gate == NULL) return -1;
+  if (!picoruby_ble_connection_gate_enter()) return -1;
+  cancel_send_permit();
+  picoruby_ble_connection_gate_exit();
+  if (adv_mutex == NULL) adv_mutex = xSemaphoreCreateMutex();
+  if (adv_mutex == NULL) return -1;
+  if (xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) return -1;
+  adv_wanted = false;
+  adv_data_len = 0;
+  adv_connectable = false;
+  xSemaphoreGive(adv_mutex);
+  return 0;
+}
 
 static int
 adv_start(void)
 {
+  if (!picoruby_nimble_ready()) return -1;
+  if (adv_connectable && !picoruby_ble_connection_available()) return BLE_HS_EBUSY;
   struct ble_gap_adv_params params;
   memset(&params, 0, sizeof(params));
   params.conn_mode = adv_connectable ? BLE_GAP_CONN_MODE_UND : BLE_GAP_CONN_MODE_NON;
@@ -35,53 +279,109 @@ adv_start(void)
   if (rc == 0) {
     rc = ble_gap_adv_start(picoruby_nimble_own_addr_type(), NULL, BLE_HS_FOREVER,
                            &params, picoruby_ble_gap_event, NULL);
+    if (rc != 0) record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_START);
+  } else {
+    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_SET_DATA);
   }
   return rc;
 }
 
-void
+int
 BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len_in, bool connectable)
 {
-  if (adv_data_len_in > sizeof(adv_data_buf)) adv_data_len_in = sizeof(adv_data_buf);
+  if (adv_data_len_in > sizeof(adv_data_buf)) return -1;
+  if (!picoruby_ble_connection_gate_enter()) return -1;
+  if (connectable && !picoruby_ble_connection_available()) {
+    picoruby_ble_connection_gate_exit();
+    return BLE_HS_EBUSY;
+  }
+  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
+    picoruby_ble_connection_gate_exit();
+    return -1;
+  }
   memcpy(adv_data_buf, adv_data, adv_data_len_in);
   adv_data_len = adv_data_len_in;
   adv_connectable = connectable;
   adv_wanted = true;
-  ble_gap_adv_stop();
-  adv_start();
+  int rc = ble_gap_adv_stop();
+  if (rc != 0 && rc != BLE_HS_EALREADY) {
+    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_STOP);
+  }
+  rc = adv_start();
+  xSemaphoreGive(adv_mutex);
+  picoruby_ble_connection_gate_exit();
+  return rc;
 }
 
 void
 BLE_peripheral_stop_advertise(void)
 {
+  if (!picoruby_ble_connection_gate_enter()) return;
+  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
   adv_wanted = false;
-  ble_gap_adv_stop();
+  int rc = ble_gap_adv_stop();
+  if (rc != 0 && rc != BLE_HS_EALREADY) {
+    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_STOP);
+  }
+  xSemaphoreGive(adv_mutex);
+  picoruby_ble_connection_gate_exit();
 }
 
 void
 picoruby_ble_peripheral_rearm_adv(void)
 {
-  if (adv_wanted) adv_start();
+  if (!picoruby_ble_connection_gate_enter()) return;
+  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
+  if (adv_wanted && !ble_gap_adv_active()) adv_start();
+  xSemaphoreGive(adv_mutex);
+  picoruby_ble_connection_gate_exit();
 }
 
-void
+int
 BLE_peripheral_notify(uint16_t att_handle)
 {
   BLE_read_value_t read_value = { .att_handle = att_handle, .data = NULL, .size = 0 };
-  if (BLE_read_data(&read_value) < 0) return;
-  if (read_value.size == 0) return;
+  if (BLE_read_data(&read_value) < 0) return -1;
+  if (read_value.size == 0) return -1;
   uint16_t nimble_handle = picoruby_ble_handle_r2n(att_handle);
-  if (nimble_handle == 0 || con_handle == 0xffff) return;
+  if (nimble_handle == 0 || !picoruby_ble_connection_gate_enter()) return -1;
+  uint16_t handle = picoruby_ble_connection_handle_snapshot();
+  /* Revalidate and keep the gate through SDK transmission. GAP disconnect
+   * cannot finish and process a reused handle while this operation runs. */
+  if (!picoruby_ble_connection_matches(handle)) {
+    picoruby_ble_connection_gate_exit();
+    return BLE_HS_ENOTCONN;
+  }
+  int payload_rc = picoruby_ble_att_payload_status(handle, read_value.size);
+  if (payload_rc != 0) {
+    picoruby_ble_connection_gate_exit();
+    return payload_rc;
+  }
   struct os_mbuf *om = ble_hs_mbuf_from_flat(read_value.data, read_value.size);
-  if (om == NULL) return;
-  ble_gatts_notify_custom(con_handle, nimble_handle, om);
+  int rc = om == NULL ? BLE_HS_ENOMEM : ble_gatts_notify_custom(handle, nimble_handle, om);
+  picoruby_ble_connection_gate_exit();
+  return rc;
 }
 
 void
 BLE_peripheral_request_can_send_now_event(void)
 {
-  uint8_t p[4] = { EVT_ATT_CAN_SEND_NOW, 2, 0, 0 };
-  p[2] = con_handle & 0xff;
-  p[3] = con_handle >> 8;
-  picoruby_nimble_enqueue_event(p, sizeof(p), false);
+  if (!picoruby_ble_connection_gate_enter()) return;
+  uint16_t handle = picoruby_ble_connection_handle_snapshot();
+  if (!picoruby_ble_connection_matches(handle)) {
+    picoruby_ble_connection_gate_exit();
+    return;
+  }
+  if (!send_permit_pending) {
+    send_permit_pending = true;
+    send_permit_handle = handle;
+  }
+  picoruby_ble_peripheral_service_send_permit();
+  picoruby_ble_connection_gate_exit();
 }

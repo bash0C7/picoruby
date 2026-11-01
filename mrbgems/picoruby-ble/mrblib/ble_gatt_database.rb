@@ -85,16 +85,22 @@ class BLE
     end
 
     def push_handle
-      @current_handle += 1
-      Utils.int16_to_little_endian(@current_handle)
+      handle = @current_handle + 1
+      raise ArgumentError, "GATT handle exceeds 16 bits" if 0xffff < handle
+      @current_handle = handle
+      Utils.int16_to_little_endian(handle)
     end
 
     def seek_handle
-      Utils.int16_to_little_endian(@current_handle + 1)
+      handle = @current_handle + 1
+      raise ArgumentError, "GATT handle exceeds 16 bits" if 0xffff < handle
+      Utils.int16_to_little_endian(handle)
     end
 
     def add_line(line)
-      @profile_data << Utils.int16_to_little_endian(line.bytesize + 2) << line
+      entry_size = line.bytesize + 2
+      raise ArgumentError, "GATT entry exceeds 16 bits" if 0xffff < entry_size
+      @profile_data << Utils.int16_to_little_endian(entry_size) << line
     end
 
     def att_flags(properties)
@@ -169,6 +175,9 @@ class BLE
     end
 
     def flag_by_uuid(uuid, properties)
+      if uuid.is_a?(Integer) && (uuid < 0 || 0xffff < (uuid >> 16))
+        raise "invalid uuid: #{uuid.inspect}"
+      end
       if properties & (NOTIFY | INDICATE) != 0
         # characteristic client configuration
         flag = write_permissions_and_key_size_flags_from_properties(properties)
@@ -182,6 +191,7 @@ class BLE
       if uuid.is_a?(String) && uuid.bytesize == 16
         Utils.int16_to_little_endian(flag|LONG_UUID)
       elsif uuid.is_a?(Integer)
+        flag |= LONG_UUID if 0x10000 <= uuid
         Utils.int16_to_little_endian(flag)
       else
         raise "invalid uuid: #{uuid.inspect}"
@@ -189,6 +199,9 @@ class BLE
     end
 
     def uuid2str(uuid)
+      if uuid.is_a?(Integer) && (uuid < 0 || 0xffff < (uuid >> 16))
+        raise "invalid uuid: #{uuid.inspect}"
+      end
       if uuid.is_a?(String)
         if uuid.bytesize == 16
           uuid
@@ -203,7 +216,9 @@ class BLE
           Utils.int16_to_little_endian(uuid)
         #elsif uuid < 0x100000000
         else
-          Utils.int32_to_little_endian(uuid)
+          [0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00,
+           0x00, 0x80, 0x00, 0x10, 0x00, 0x00].pack("CCCCCCCCCCCC") +
+            Utils.int32_to_little_endian(uuid)
         #else
         #  raise "invalid uuid: #{uuid.inspect}"
         end

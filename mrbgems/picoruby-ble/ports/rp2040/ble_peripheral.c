@@ -21,10 +21,10 @@ BLE_peripheral_stop_advertise(void)
 
 static uint8_t adv_data_buf[31];
 
-void
+int
 BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len, bool connectable)
 {
-  if (adv_data_len > sizeof(adv_data_buf)) adv_data_len = sizeof(adv_data_buf);
+  if (adv_data_len > sizeof(adv_data_buf)) return -1;
   memcpy(adv_data_buf, adv_data, adv_data_len);
   // setup advertisements
   uint16_t adv_int_min = 800;
@@ -37,15 +37,16 @@ BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len, bool connectab
   gap_advertisements_set_params(adv_int_min, adv_int_max, adv_type, 0, null_addr, channel_map, filter_policy);
   gap_advertisements_set_data(adv_data_len, adv_data_buf);
   gap_advertisements_enable(1);
+  return 0;
 }
 
-void
+int
 BLE_peripheral_notify(uint16_t att_handle)
 {
   BLE_read_value_t read_value = { .att_handle = att_handle, .data = NULL, .size = 0 };
-  if (BLE_read_data(&read_value) < 0) return;
-  if (read_value.size == 0) return;
-  att_server_notify(con_handle, att_handle, read_value.data, read_value.size);
+  if (BLE_read_data(&read_value) < 0) return -1;
+  if (read_value.size == 0) return -1;
+  return att_server_notify(con_handle, att_handle, read_value.data, read_value.size);
 }
 
 void
