@@ -510,7 +510,7 @@ GC, the method lookups before the direct calls and the DOM calls.
 
 ## 6. Tools and layout
 
-- `tools/aot-gen --gem GEM --out-c FILE --out-rb DIR [--manifest FILE]
+- `tools/aot-gen --gem DIR --out-c FILE --out-rb DIR [--manifest FILE]
   [--exclude A#b,C.d] [--include-widened] [--types JSON]`: the generator
   the build calls. It runs Spinel itself unless `--types` is given
   (`SPINEL=/path/to/spinel`, or `spinel` on PATH).
