@@ -28,7 +28,7 @@ class WriteFloodProbe < BLE
                            CLIENT_CHARACTERISTIC_CONFIGURATION, "\x00\x00")
         end
         s.add_characteristic(READ|WRITE|WRITE_WITHOUT_RESPONSE|DYNAMIC,
-                             CHAR_WRITE, READ|WRITE|DYNAMIC, "")
+                             CHAR_WRITE, READ|WRITE|WRITE_WITHOUT_RESPONSE|DYNAMIC, "")
       end
     end
     @write_handle = db.handle_table[SERVICE][CHAR_WRITE][:value_handle]

@@ -435,15 +435,18 @@ profile_cccd_security(uint16_t flags)
   return out;
 }
 
+static uint16_t profile_reject_handle;
+static const char *profile_reject_reason;
+#define PROFILE_REJECT(h, why) do { profile_reject_handle = (h); profile_reject_reason = (why); return -1; } while (0)
+
 /* Candidate policy, not an assertion of compatibility: reject requirements
  * that these public definition fields cannot preserve, before stopping the
- * old registration. Request and command writes reach one SDK callback. */
+ * old registration. */
 static int
 profile_permissions_supported(uint16_t flags)
 {
   uint16_t writes = flags & (BLOB_FLAG_WRITE | BLOB_FLAG_WRITE_NO_RSP);
   if ((flags & BLOB_FLAG_SIGNED_WRITE) && !writes) return -1;
-  if (writes && writes != (BLOB_FLAG_WRITE | BLOB_FLAG_WRITE_NO_RSP)) return -1;
   return 0;
 }
 
@@ -561,7 +564,7 @@ profile_reserved_uuid16(const uint8_t *uuid, uint16_t uuid_len)
 static int
 validate_att_topology(const uint8_t *db, size_t db_len)
 {
-  if (BLE_profile_extent(db, db_len, &db_len) < 0) return -1;
+  if (BLE_profile_extent(db, db_len, &db_len) < 0) PROFILE_REJECT(0, "malformed profile blob");
   if (db == NULL) return 0;
   int services = 0, chars = 0, descs = 0, maps = 0, uuids = 0, mirrors = 0, cccds = 0;
   bool in_char = false, has_descs = false, has_cccd = false;
@@ -580,7 +583,7 @@ validate_att_topology(const uint8_t *db, size_t db_len)
     uint16_t value_len = size - 6 - uuid_len;
     uint16_t u16 = profile_reserved_uuid16(uuid, uuid_len);
     pos += size;
-    if (handle == 0 || handle <= previous_handle) return -1;
+    if (handle == 0 || handle <= previous_handle) PROFILE_REJECT(handle, "handle is zero or not increasing");
     previous_handle = handle;
 
     /* A declaration must be followed by its exact value, even if the value
@@ -588,32 +591,33 @@ validate_att_topology(const uint8_t *db, size_t db_len)
      * descriptor or silently abandon it at a new service / terminator. */
     if (expected_handle) {
       if (handle != expected_handle || uuid_len != expected_uuid_len ||
-          memcmp(uuid, expected_uuid, uuid_len) != 0) return -1;
-      if (profile_permissions_supported(flags) < 0 ||
-          (flags & ~props & (BLOB_FLAG_OPERATIONS | BLOB_FLAG_SIGNED_WRITE))) return -1;
+          memcmp(uuid, expected_uuid, uuid_len) != 0) PROFILE_REJECT(handle, "value does not match its declaration");
+      if (profile_permissions_supported(flags) < 0) PROFILE_REJECT(handle, "unsupported value permissions");
+      if (flags & ~props & (BLOB_FLAG_OPERATIONS | BLOB_FLAG_SIGNED_WRITE)) PROFILE_REJECT(handle, "value flags exceed declared properties");
       expected_handle = 0;
       if ((flags & (BLOB_FLAG_DYNAMIC | BLOB_FLAG_READ)) ==
           (BLOB_FLAG_DYNAMIC | BLOB_FLAG_READ)) mirrors++;
     } else if (u16 == GATT_PRIMARY_SERVICE_UUID || u16 == GATT_SECONDARY_SERVICE_UUID) {
-      if (value_len != 2 && value_len != 4 && value_len != 16) return -1;
+      if (value_len != 2 && value_len != 4 && value_len != 16) PROFILE_REJECT(handle, "bad service UUID length");
       if ((flags & BLOB_FLAG_OPERATIONS) != BLOB_FLAG_READ ||
           (flags & (BLOB_FLAG_READ_LEVEL | BLOB_FLAG_WRITE_LEVEL | BLOB_FLAG_KEY_SIZE |
-                    BLOB_FLAG_READ_SC | BLOB_FLAG_WRITE_SC | BLOB_FLAG_SIGNED_WRITE))) return -1;
+                    BLOB_FLAG_READ_SC | BLOB_FLAG_WRITE_SC | BLOB_FLAG_SIGNED_WRITE))) PROFILE_REJECT(handle, "unsupported service record flags");
       if (has_descs) descs++; /* zero descriptor terminator */
       services++;
       uuids++;
       chars++; /* each service requires a zero characteristic terminator */
       in_char = has_descs = has_cccd = false;
     } else if (u16 == GATT_CHARACTERISTIC_UUID) {
-      if (services == 0 || (value_len != 5 && value_len != 19)) return -1;
+      if (services == 0) PROFILE_REJECT(handle, "characteristic outside a service");
+      if (value_len != 5 && value_len != 19) PROFILE_REJECT(handle, "bad characteristic declaration length");
       if (has_descs) descs++;
       has_descs = has_cccd = false;
       if ((flags & BLOB_FLAG_OPERATIONS) != BLOB_FLAG_READ ||
           (flags & (BLOB_FLAG_READ_LEVEL | BLOB_FLAG_WRITE_LEVEL | BLOB_FLAG_KEY_SIZE |
-                    BLOB_FLAG_READ_SC | BLOB_FLAG_WRITE_SC | BLOB_FLAG_SIGNED_WRITE))) return -1;
+                    BLOB_FLAG_READ_SC | BLOB_FLAG_WRITE_SC | BLOB_FLAG_SIGNED_WRITE))) PROFILE_REJECT(handle, "unsupported declaration record flags");
       props = value[0];
       expected_handle = get_le16(value + 1);
-      if (expected_handle <= handle) return -1;
+      if (expected_handle <= handle) PROFILE_REJECT(handle, "value handle does not follow its declaration");
       expected_uuid = value + 3;
       expected_uuid_len = value_len - 3;
       in_char = true;
@@ -621,20 +625,20 @@ validate_att_topology(const uint8_t *db, size_t db_len)
       maps++;
       uuids++;
     } else {
-      if (!in_char) return -1;
+      if (!in_char) PROFILE_REJECT(handle, "descriptor outside a characteristic");
       /* Include-service declarations have no translation in this adapter.
        * Ordinary descriptors, including vendor UUIDs, remain supported. */
-      if (u16 == 0x2802) return -1;
+      if (u16 == 0x2802) PROFILE_REJECT(handle, "include declaration unsupported");
       if (u16 == GATT_CCCD_UUID) {
         /* NimBLE supplies this descriptor from NOTIFY / INDICATE. Only the
          * single, initially disabled two-byte form can be coalesced exactly. */
         if (has_cccd || !(props & 0x30) || value_len != 2 ||
-            value[0] != 0 || value[1] != 0) return -1;
-        if (profile_cccd_supported(flags) < 0) return -1;
+            value[0] != 0 || value[1] != 0) PROFILE_REJECT(handle, "CCCD form unsupported");
+        if (profile_cccd_supported(flags) < 0) PROFILE_REJECT(handle, "CCCD flags unsupported");
         has_cccd = true;
         cccds++;
       } else {
-        if (profile_permissions_supported(flags) < 0) return -1;
+        if (profile_permissions_supported(flags) < 0) PROFILE_REJECT(handle, "unsupported descriptor permissions");
         has_descs = true;
         descs++;
         maps++;
@@ -646,11 +650,12 @@ validate_att_topology(const uint8_t *db, size_t db_len)
     if (services > MAX_SVCS || chars > MAX_CHR_SLOTS ||
         descs > MAX_DSC_SLOTS || maps > MAX_ATTRS ||
         uuids > MAX_UUIDS || mirrors > RDM_SLOTS ||
-        cccds >= PICORUBY_NIMBLE_WRITE_DEPTH) return -1;
+        cccds >= PICORUBY_NIMBLE_WRITE_DEPTH) PROFILE_REJECT(handle, "profile exceeds a fixed capacity");
   }
-  if (expected_handle) return -1;
+  if (expected_handle) PROFILE_REJECT(previous_handle, "declaration without its value");
   if (has_descs) descs++;
-  return descs <= MAX_DSC_SLOTS ? 0 : -1;
+  if (descs > MAX_DSC_SLOTS) PROFILE_REJECT(previous_handle, "descriptor slots exhausted");
+  return 0;
 }
 
 static uint16_t
@@ -1264,17 +1269,31 @@ int
 BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
 {
   size_t len;
-  if (BLE_profile_extent(profile_data, profile_len, &len) < 0) return -1;
-  if (validate_att_topology(profile_data, len) < 0) return -1;
-  if (picoruby_nimble_cleanup_blocked()) return -1;
+  if (BLE_profile_extent(profile_data, profile_len, &len) < 0) {
+    ESP_LOGE(BLE_TAG, "profile blob is malformed");
+    return -1;
+  }
+  if (validate_att_topology(profile_data, len) < 0) {
+    ESP_LOGE(BLE_TAG, "profile rejected at handle %u: %s",
+             (unsigned)profile_reject_handle, profile_reject_reason);
+    return -1;
+  }
+  if (picoruby_nimble_cleanup_blocked()) {
+    ESP_LOGE(BLE_TAG, "init refused: previous NimBLE cleanup is blocked");
+    return -1;
+  }
   uint8_t *replacement = NULL;
   if (profile_data) {
     replacement = (uint8_t *)malloc(len);
-    if (replacement == NULL) return -1;
+    if (replacement == NULL) {
+      ESP_LOGE(BLE_TAG, "profile copy allocation failed");
+      return -1;
+    }
     memcpy(replacement, profile_data, len);
   }
   if (picoruby_nimble_started() && picoruby_nimble_stop() != 0) {
     free(replacement);
+    ESP_LOGE(BLE_TAG, "NimBLE stop failed");
     return -1;
   }
   role = (enum BLE_role_t)ble_role;
@@ -1291,6 +1310,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   if (replacement && parse_att_db(replacement, len) < 0) {
     free(owned_profile_data);
     owned_profile_data = NULL;
+    ESP_LOGE(BLE_TAG, "profile translation failed");
     return -1;
   }
   int cccds = 0;
@@ -1302,7 +1322,11 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   if (mismatch) {
     ESP_LOGW(BLE_TAG, "GATT layout differs from profile at handle %u", (unsigned)mismatch);
   }
-  return picoruby_nimble_start(register_services);
+  int rc = picoruby_nimble_start(register_services);
+  if (rc != 0) {
+    ESP_LOGE(BLE_TAG, "NimBLE start failed: %d", rc);
+  }
+  return rc;
 }
 
 static void

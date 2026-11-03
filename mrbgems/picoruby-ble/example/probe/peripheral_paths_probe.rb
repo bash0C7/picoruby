@@ -30,7 +30,7 @@ class PeripheralPathsProbe < BLE
                            CLIENT_CHARACTERISTIC_CONFIGURATION, "\x00\x00")
         end
         s.add_characteristic(READ|WRITE|WRITE_WITHOUT_RESPONSE|DYNAMIC,
-                             CHAR_WRITE, READ|WRITE|DYNAMIC, "")
+                             CHAR_WRITE, READ|WRITE|WRITE_WITHOUT_RESPONSE|DYNAMIC, "")
       end
     end
     @notify_handle = db.handle_table[SERVICE][CHAR_NOTIFY][:value_handle]
