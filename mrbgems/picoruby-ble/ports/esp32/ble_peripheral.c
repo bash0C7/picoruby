@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_log.h"
 
 #include "../../include/ble.h"
 #include "../../include/ble_peripheral.h"
@@ -18,6 +19,8 @@
 
 #include "ble_common.h"
 #include "nimble_owner.h"
+
+static const char *BLE_TAG = "prb_ble_peripheral";
 
 /* All entry points take this gate before adv_mutex or SDK host locks.
  * GAP callbacks run without the SDK host lock; synchronous SDK callbacks
@@ -242,45 +245,6 @@ static bool adv_connectable = false;
 static bool adv_wanted = false;
 static SemaphoreHandle_t adv_mutex;
 
-// Process-lifetime SDK operation failures; this does not assert advertising is off.
-static uint32_t advertising_failure_count;
-static int32_t advertising_failure_last_rc;
-static uint8_t advertising_failure_stage;
-static uint8_t advertising_failure_flags;
-static portMUX_TYPE advertising_failure_mux = portMUX_INITIALIZER_UNLOCKED;
-
-static void
-record_advertising_failure(int rc, uint8_t stage)
-{
-  taskENTER_CRITICAL(&advertising_failure_mux);
-  if (advertising_failure_count == UINT32_MAX) advertising_failure_flags |= PICORUBY_BLE_ADVERTISING_FAILURE_SATURATED;
-  else advertising_failure_count++;
-  advertising_failure_last_rc = (int32_t)rc;
-  advertising_failure_stage = stage;
-  taskEXIT_CRITICAL(&advertising_failure_mux);
-}
-
-void
-picoruby_ble_copy_advertising_failure_snapshot(uint8_t *out)
-{
-  taskENTER_CRITICAL(&advertising_failure_mux);
-  uint32_t count = advertising_failure_count;
-  uint32_t rc = (uint32_t)advertising_failure_last_rc;
-  uint8_t stage = advertising_failure_stage;
-  uint8_t flags = advertising_failure_flags;
-  taskEXIT_CRITICAL(&advertising_failure_mux);
-  out[0] = count & 0xff;
-  out[1] = (count >> 8) & 0xff;
-  out[2] = (count >> 16) & 0xff;
-  out[3] = (count >> 24) & 0xff;
-  out[4] = rc & 0xff;
-  out[5] = (rc >> 8) & 0xff;
-  out[6] = (rc >> 16) & 0xff;
-  out[7] = (rc >> 24) & 0xff;
-  out[8] = stage;
-  out[9] = flags;
-}
-
 int
 picoruby_ble_peripheral_setup(void)
 {
@@ -320,9 +284,9 @@ adv_start(void)
   if (rc == 0) {
     rc = ble_gap_adv_start(picoruby_nimble_own_addr_type(), NULL, BLE_HS_FOREVER,
                            &params, picoruby_ble_gap_event, NULL);
-    if (rc != 0) record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_START);
+    if (rc != 0) ESP_LOGW(BLE_TAG, "advertising start failed: %d", rc);
   } else {
-    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_SET_DATA);
+    ESP_LOGW(BLE_TAG, "advertising set data failed: %d", rc);
   }
   return rc;
 }
@@ -332,7 +296,7 @@ adv_stop_sdk(void)
 {
   int rc = ble_gap_adv_stop();
   if (rc != 0 && rc != BLE_HS_EALREADY) {
-    record_advertising_failure(rc, PICORUBY_BLE_ADVERTISING_FAILURE_STOP);
+    ESP_LOGW(BLE_TAG, "advertising stop failed: %d", rc);
   }
 }
 

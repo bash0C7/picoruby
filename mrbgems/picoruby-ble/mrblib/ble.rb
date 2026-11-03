@@ -103,16 +103,6 @@ class BLE
   attr_reader :role
   attr_accessor :debug
 
-  # Latest process-wide cumulative value fetched from native. Not the rejection count of a session.
-  def event_rejection_snapshot
-    snapshot = _event_rejection_snapshot
-    snapshot&.dup
-  end
-
-  def event_rejection_observation_supported?
-    !_event_rejection_snapshot.nil?
-  end
-
   def advertise(adv_data)
     case @role
     when :peripheral
@@ -201,7 +191,7 @@ class BLE
   private
 
   def _check_control_fault
-    reason = control_fault
+    reason = _control_fault
     return if reason.nil? || reason == 0
     raise "BLE session cancelled (control fault #{reason}); initialize BLE again"
   end

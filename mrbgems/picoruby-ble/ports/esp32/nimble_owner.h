@@ -58,9 +58,6 @@ void picoruby_nimble_get_event_rejections(picoruby_nimble_event_rejections_t *ou
 void picoruby_nimble_copy_event_rejections(uint8_t *out);
 void picoruby_nimble_record_oversized_event(void);
 void picoruby_nimble_record_copy_failure(void);
-#define PICORUBY_NIMBLE_HOST_RESET_SNAPSHOT_SIZE 5
-// Process-cumulative LE count and saturation flag. out must be at least 5 bytes. Not cleared by new/start/successful sync.
-void picoruby_nimble_copy_host_reset_snapshot(uint8_t *out);
 void picoruby_nimble_reset_events(void);
 #define PICORUBY_NIMBLE_WRITE_MAX 512
 #define PICORUBY_NIMBLE_WRITE_DEPTH 16
@@ -74,7 +71,6 @@ typedef struct {
 int picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
 int picoruby_nimble_enqueue_cccd(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
 void picoruby_nimble_reserve_cccd_writes(int count);
-int picoruby_nimble_write_pending(uint16_t ruby_handle);
 bool picoruby_nimble_peek_write(uint16_t ruby_handle, uint8_t *copy, uint16_t *len,
                                picoruby_nimble_write_ticket_t *ticket);
 bool picoruby_nimble_commit_write(const picoruby_nimble_write_ticket_t *ticket);

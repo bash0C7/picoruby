@@ -199,20 +199,6 @@ BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
 }
 
 int
-BLE_write_pending(uint16_t att_handle)
-{
-#ifdef PICORB_PLATFORM_ESP32
-  return picoruby_nimble_write_pending(att_handle);
-#else
-  if (write_values.tt != MRBC_TT_HASH) return 0;
-  mrbc_value key = mrbc_integer_value(att_handle);
-  mrbc_value queue = mrbc_hash_get(&write_values, &key);
-  if (queue.tt != MRBC_TT_ARRAY) return 0;
-  return mrbc_array_size(&queue);
-#endif
-}
-
-int
 BLE_read_data(BLE_read_value_t *read_value)
 {
   if (read_values.tt == MRBC_TT_NIL) {
@@ -451,42 +437,6 @@ c_event_rejection_snapshot(mrbc_vm *vm, mrbc_value *v, int argc)
 }
 
 static void
-c_host_reset_snapshot(mrbc_vm *vm, mrbc_value *v, int argc)
-{
-  if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
-#ifdef PICORB_PLATFORM_ESP32
-  uint8_t bytes[PICORUBY_NIMBLE_HOST_RESET_SNAPSHOT_SIZE];
-  picoruby_nimble_copy_host_reset_snapshot(bytes);
-  mrbc_value snapshot = mrbc_string_new(vm, bytes, sizeof(bytes));
-  SET_RETURN(snapshot);
-#else
-  SET_NIL_RETURN();
-#endif
-}
-
-static void
-c_advertising_failure_snapshot(mrbc_vm *vm, mrbc_value *v, int argc)
-{
-  if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
-#ifdef PICORB_PLATFORM_ESP32
-  uint8_t bytes[PICORUBY_BLE_ADVERTISING_FAILURE_SNAPSHOT_SIZE];
-  picoruby_ble_copy_advertising_failure_snapshot(bytes);
-  mrbc_value snapshot = mrbc_string_new(vm, bytes, sizeof(bytes));
-  SET_RETURN(snapshot);
-#else
-  SET_NIL_RETURN();
-#endif
-}
-
-static void
 c_native_ready(mrbc_vm *vm, mrbc_value *v, int argc)
 {
   if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
@@ -563,10 +513,8 @@ mrbc_ble_init(mrbc_vm *vm)
   mrbc_define_method(vm, class_BLE, "gap_local_bd_addr", c_gap_local_bd_addr);
   mrbc_define_method(vm, class_BLE, "pop_write_value", c_pop_write_value);
   mrbc_define_method(vm, class_BLE, "push_read_value", c_push_read_value);
-  mrbc_define_method(vm, class_BLE, "control_fault", c_control_fault);
+  mrbc_define_method(vm, class_BLE, "_control_fault", c_control_fault);
   mrbc_define_method(vm, class_BLE, "_event_rejection_snapshot", c_event_rejection_snapshot);
-  mrbc_define_method(vm, class_BLE, "host_reset_snapshot", c_host_reset_snapshot);
-  mrbc_define_method(vm, class_BLE, "advertising_failure_snapshot", c_advertising_failure_snapshot);
   mrbc_define_method(vm, class_BLE, "_check_registration", c_check_registration);
   mrbc_define_method(vm, class_BLE, "_power_control_registration", c_power_control_registration);
   mrbc_define_method(vm, class_BLE, "_event_popped", c_event_popped);

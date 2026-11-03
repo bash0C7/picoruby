@@ -81,14 +81,10 @@ class BLE
   def ensure: () ?{ () -> void } -> (Proc | nil)
   private def _init: (String | nil) -> void
   private def _native_ready: () -> bool
-  def control_fault: () -> (Integer | nil)
+  private def _control_fault: () -> (Integer | nil)
   private def _check_control_fault: () -> nil
   private def _event_rejection_snapshot: () -> (String | nil)
   private def _observe_event_rejections: () -> (String | nil)
-  def event_rejection_snapshot: () -> (String | nil)
-  def event_rejection_observation_supported?: () -> bool
-  def host_reset_snapshot: () -> (String | nil)
-  def advertising_failure_snapshot: () -> (String | nil)
   private def _event_popped: () -> nil
   private def _event_queue_cleared: (?Task::Queue expected_queue) -> nil
   private def _check_registration: (Task::Queue expected_queue) -> nil

@@ -73,8 +73,6 @@ static uint32_t evq_dropped = 0;
 static bool evq_full_logged = false;
 static portMUX_TYPE evq_mux = portMUX_INITIALIZER_UNLOCKED;
 static picoruby_nimble_event_rejections_t event_rejections;
-static uint32_t host_reset_count;
-static bool host_reset_saturated;
 static uint8_t control_fault;
 
 typedef struct {
@@ -247,19 +245,6 @@ picoruby_nimble_copy_event_rejections(uint8_t *out)
 }
 
 void
-picoruby_nimble_copy_host_reset_snapshot(uint8_t *out)
-{
-  taskENTER_CRITICAL(&evq_mux);
-  uint32_t count = host_reset_count;
-  bool saturated = host_reset_saturated;
-  taskEXIT_CRITICAL(&evq_mux);
-  for (int byte = 0; byte < 4; byte++) {
-    out[byte] = (uint8_t)(count >> (8 * byte));
-  }
-  out[4] = saturated ? 1 : 0;
-}
-
-void
 picoruby_nimble_reset_events(void)
 {
   taskENTER_CRITICAL(&evq_mux);
@@ -359,18 +344,6 @@ picoruby_nimble_reset_writes(void)
   for (int i = 0; i < WRQ_DEPTH; i++) wrq[i].occupied = false;
   wrq_drop_logged = false;
   taskEXIT_CRITICAL(&wrq_mux);
-}
-
-int
-picoruby_nimble_write_pending(uint16_t ruby_handle)
-{
-  int count = 0;
-  taskENTER_CRITICAL(&wrq_mux);
-  for (int slot = wrq_head; slot >= 0; slot = wrq[slot].next) {
-    if (wrq[slot].ruby_handle == ruby_handle) count++;
-  }
-  taskEXIT_CRITICAL(&wrq_mux);
-  return count;
 }
 
 bool
@@ -553,15 +526,11 @@ on_sync(void)
 static void
 on_reset(int reason)
 {
-  (void)reason;
   picoruby_ble_connection_close();
   taskENTER_CRITICAL(&owner_state_mux);
   synced = false;
   taskEXIT_CRITICAL(&owner_state_mux);
-  taskENTER_CRITICAL(&evq_mux);
-  if (host_reset_count == UINT32_MAX) host_reset_saturated = true;
-  else host_reset_count++;
-  taskEXIT_CRITICAL(&evq_mux);
+  ESP_LOGW(TAG, "NimBLE host reset (reason %d)", reason);
 }
 
 /* SDK stop completion and this event are separate: the public SDK stop

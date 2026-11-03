@@ -60,15 +60,6 @@ void picoruby_ble_peripheral_suspend_adv(void);
 void picoruby_ble_peripheral_resume_adv(void);
 void picoruby_ble_peripheral_service_send_permit(void);
 
-// SDK operation failure snapshot: little-endian count:u32, last_rc:i32, stage:u8, flags:u8.
-// Process-lifetime, read-only; failure count does not imply advertising is stopped.
-#define PICORUBY_BLE_ADVERTISING_FAILURE_SNAPSHOT_SIZE 10
-#define PICORUBY_BLE_ADVERTISING_FAILURE_STOP 1
-#define PICORUBY_BLE_ADVERTISING_FAILURE_SET_DATA 2
-#define PICORUBY_BLE_ADVERTISING_FAILURE_START 3
-#define PICORUBY_BLE_ADVERTISING_FAILURE_SATURATED 1
-void picoruby_ble_copy_advertising_failure_snapshot(uint8_t *out);
-
 #ifdef __cplusplus
 }
 #endif

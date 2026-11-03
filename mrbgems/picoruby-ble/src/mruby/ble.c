@@ -202,19 +202,6 @@ BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
 }
 
 int
-BLE_write_pending(uint16_t att_handle)
-{
-#ifdef PICORB_PLATFORM_ESP32
-  return picoruby_nimble_write_pending(att_handle);
-#else
-  if (_mrb == NULL || mrb_hash_p(write_values) == false) return 0;
-  mrb_value queue = mrb_hash_get(_mrb, write_values, mrb_int_value(_mrb, att_handle));
-  if (!mrb_array_p(queue)) return 0;
-  return (int)RARRAY_LEN(queue);
-#endif
-}
-
-int
 BLE_read_data(BLE_read_value_t *read_value)
 {
   if (_mrb == NULL || mrb_hash_p(read_values) == false) return -1;
@@ -413,36 +400,6 @@ mrb_event_rejection_snapshot(mrb_state *mrb, mrb_value self)
 }
 
 static mrb_value
-mrb_host_reset_snapshot(mrb_state *mrb, mrb_value self)
-{
-  mrb_ble_check_active_owner(mrb, self);
-  (void)self;
-  mrb_get_args(mrb, "");
-#ifdef PICORB_PLATFORM_ESP32
-  uint8_t bytes[PICORUBY_NIMBLE_HOST_RESET_SNAPSHOT_SIZE];
-  picoruby_nimble_copy_host_reset_snapshot(bytes);
-  return mrb_str_new(mrb, (const char *)bytes, sizeof(bytes));
-#else
-  return mrb_nil_value();
-#endif
-}
-
-static mrb_value
-mrb_advertising_failure_snapshot(mrb_state *mrb, mrb_value self)
-{
-  mrb_ble_check_active_owner(mrb, self);
-  (void)self;
-  mrb_get_args(mrb, "");
-#ifdef PICORB_PLATFORM_ESP32
-  uint8_t bytes[PICORUBY_BLE_ADVERTISING_FAILURE_SNAPSHOT_SIZE];
-  picoruby_ble_copy_advertising_failure_snapshot(bytes);
-  return mrb_str_new(mrb, (const char *)bytes, sizeof(bytes));
-#else
-  return mrb_nil_value();
-#endif
-}
-
-static mrb_value
 mrb_native_ready(mrb_state *mrb, mrb_value self)
 {
   mrb_ble_check_active_owner(mrb, self);
@@ -490,10 +447,8 @@ mrb_picoruby_ble_gem_init(mrb_state* mrb)
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(gap_local_bd_addr), mrb_gap_local_bd_addr, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(pop_write_value), mrb_pop_write_value, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(push_read_value), mrb_push_read_value, MRB_ARGS_REQ(2));
-  mrb_define_method_id(mrb, class_BLE, MRB_SYM(control_fault), mrb_control_fault, MRB_ARGS_NONE());
+  mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_control_fault), mrb_control_fault, MRB_ARGS_NONE());
   mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_event_rejection_snapshot), mrb_event_rejection_snapshot, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, class_BLE, MRB_SYM(host_reset_snapshot), mrb_host_reset_snapshot, MRB_ARGS_NONE());
-  mrb_define_method_id(mrb, class_BLE, MRB_SYM(advertising_failure_snapshot), mrb_advertising_failure_snapshot, MRB_ARGS_NONE());
   mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_check_registration), mrb_check_registration, MRB_ARGS_REQ(1));
   mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_power_control_registration), mrb_power_control_registration, MRB_ARGS_REQ(2));
   mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_event_popped), mrb_event_popped, MRB_ARGS_NONE());
