@@ -31,33 +31,12 @@ typedef enum {
   PICORUBY_NIMBLE_EVENT_NOT_READY = -3,
 } picoruby_nimble_event_result_t;
 
-typedef struct {
-  uint32_t full;
-  uint32_t too_large;
-  uint32_t not_ready;
-  bool saturated;
-  bool copy_failed;
-  bool write_rejected;
-} picoruby_nimble_event_rejections_t;
-
 typedef enum {
   PICORUBY_NIMBLE_EVENT_DATA,
   PICORUBY_NIMBLE_EVENT_CONTROL,
 } picoruby_nimble_event_class_t;
 
 picoruby_nimble_event_result_t picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class);
-// Process-wide non-destructive snapshot. out is nonnull. Not cleared by reset/start/stop.
-void picoruby_nimble_get_event_rejections(picoruby_nimble_event_rejections_t *out);
-#define PICORUBY_NIMBLE_EVENT_REJECTION_SNAPSHOT_SIZE 13
-#define PICORUBY_NIMBLE_REJECTION_SATURATED 0x01
-#define PICORUBY_NIMBLE_REJECTION_COPY_FAILED 0x02
-#define PICORUBY_NIMBLE_REJECTION_WRITE_REJECTED 0x04
-// Copies the three cumulative LE values and the flags. Bit 0 of the last byte is saturation, bit 1 is copy failure.
-// Bit 2 is a rejection in native write input validation. The flags do not represent counts or session attribution.
-// out must be at least 13 bytes. Not cleared by reset either.
-void picoruby_nimble_copy_event_rejections(uint8_t *out);
-void picoruby_nimble_record_oversized_event(void);
-void picoruby_nimble_record_copy_failure(void);
 void picoruby_nimble_reset_events(void);
 #define PICORUBY_NIMBLE_WRITE_MAX 512
 #define PICORUBY_NIMBLE_WRITE_DEPTH 16

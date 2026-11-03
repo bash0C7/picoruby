@@ -90,7 +90,6 @@ class BLE
     # together with this instance.
     @write_values = {}
     @read_values = {}
-    @last_event_rejection_snapshot = nil
     if Object.const_defined?(:CYW43) && !CYW43.init
       puts "Failed to initialize CYW43"
       return # raising an exception here may cause a crash
@@ -134,8 +133,7 @@ class BLE
     event_queue = @event_queue
     _check_control_fault
     raise 'BLE init failed' unless @ble_initialized && _native_ready
-    _observe_event_rejections
-    poll_interval_ms = @last_event_rejection_snapshot ? EVENT_POLL_INTERVAL_MS : nil
+    poll_interval_ms = _control_fault ? EVENT_POLL_INTERVAL_MS : nil
     if timeout_ms
       debug_puts "Starting for #{timeout_ms} ms"
     else
@@ -151,7 +149,6 @@ class BLE
       _check_registration(event_queue)
       _check_control_fault
       total_timeout_ms = Machine.board_millis - started_at
-      _observe_event_rejections if poll_interval_ms
       break if timeout_ms && timeout_ms <= total_timeout_ms
       if @state == stop_state
         puts "Stopped by state: #{stop_state}"
@@ -194,9 +191,5 @@ class BLE
     reason = _control_fault
     return if reason.nil? || reason == 0
     raise "BLE session cancelled (control fault #{reason}); initialize BLE again"
-  end
-
-  def _observe_event_rejections
-    @last_event_rejection_snapshot = _event_rejection_snapshot
   end
 end

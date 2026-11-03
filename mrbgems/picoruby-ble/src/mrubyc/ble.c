@@ -419,24 +419,6 @@ c_control_fault(mrbc_vm *vm, mrbc_value *v, int argc)
 }
 
 static void
-c_event_rejection_snapshot(mrbc_vm *vm, mrbc_value *v, int argc)
-{
-  if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
-#ifdef PICORB_PLATFORM_ESP32
-  uint8_t bytes[PICORUBY_NIMBLE_EVENT_REJECTION_SNAPSHOT_SIZE];
-  picoruby_nimble_copy_event_rejections(bytes);
-  mrbc_value snapshot = mrbc_string_new(vm, bytes, sizeof(bytes));
-  SET_RETURN(snapshot);
-#else
-  SET_NIL_RETURN();
-#endif
-}
-
-static void
 c_native_ready(mrbc_vm *vm, mrbc_value *v, int argc)
 {
   if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
@@ -514,7 +496,6 @@ mrbc_ble_init(mrbc_vm *vm)
   mrbc_define_method(vm, class_BLE, "pop_write_value", c_pop_write_value);
   mrbc_define_method(vm, class_BLE, "push_read_value", c_push_read_value);
   mrbc_define_method(vm, class_BLE, "_control_fault", c_control_fault);
-  mrbc_define_method(vm, class_BLE, "_event_rejection_snapshot", c_event_rejection_snapshot);
   mrbc_define_method(vm, class_BLE, "_check_registration", c_check_registration);
   mrbc_define_method(vm, class_BLE, "_power_control_registration", c_power_control_registration);
   mrbc_define_method(vm, class_BLE, "_event_popped", c_event_popped);

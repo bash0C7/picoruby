@@ -72,7 +72,6 @@ static uint32_t evq_gen = 0;
 static uint32_t evq_dropped = 0;
 static bool evq_full_logged = false;
 static portMUX_TYPE evq_mux = portMUX_INITIALIZER_UNLOCKED;
-static picoruby_nimble_event_rejections_t event_rejections;
 static uint8_t control_fault;
 
 typedef struct {
@@ -156,49 +155,21 @@ reserve_event_storage(void)
   return 0;
 }
 
-// Call with evq_mux held. The cumulative count saturates so that unobserved rejections are not erased by a wrap.
-static void
-record_event_rejection(uint32_t *counter)
-{
-  if (*counter == UINT32_MAX) event_rejections.saturated = true;
-  else (*counter)++;
-}
-
-// Rejections before an event is created are recorded in the same non-destructive snapshot as rejections after enqueue.
-void
-picoruby_nimble_record_oversized_event(void)
-{
-  taskENTER_CRITICAL(&evq_mux);
-  record_event_rejection(&event_rejections.too_large);
-  taskEXIT_CRITICAL(&evq_mux);
-}
-
-void
-picoruby_nimble_record_copy_failure(void)
-{
-  taskENTER_CRITICAL(&evq_mux);
-  event_rejections.copy_failed = true;
-  taskEXIT_CRITICAL(&evq_mux);
-}
-
 picoruby_nimble_event_result_t
 picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class)
 {
-  taskENTER_CRITICAL(&evq_mux);
   if (len > EVQ_PKT_MAX) {
-    record_event_rejection(&event_rejections.too_large);
-    taskEXIT_CRITICAL(&evq_mux);
     ESP_LOGW(TAG, "event exceeds queue capacity: %u", (unsigned)len);
     return PICORUBY_NIMBLE_EVENT_TOO_LARGE;
   }
+  taskENTER_CRITICAL(&evq_mux);
   if (evq == NULL) {
-    record_event_rejection(&event_rejections.not_ready);
     taskEXIT_CRITICAL(&evq_mux);
+    ESP_LOGW(TAG, "event dropped, queue not ready: len=%u", (unsigned)len);
     return PICORUBY_NIMBLE_EVENT_NOT_READY;
   }
   int limit = event_class == PICORUBY_NIMBLE_EVENT_CONTROL ? EVQ_DEPTH : EVQ_DATA_DEPTH;
   if (evq_count >= limit) {
-    record_event_rejection(&event_rejections.full);
     evq_dropped++;
     bool first = !evq_full_logged;
     evq_full_logged = true;
@@ -220,31 +191,6 @@ picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_
 }
 
 void
-picoruby_nimble_get_event_rejections(picoruby_nimble_event_rejections_t *out)
-{
-  taskENTER_CRITICAL(&evq_mux);
-  *out = event_rejections;
-  taskEXIT_CRITICAL(&evq_mux);
-}
-
-void
-picoruby_nimble_copy_event_rejections(uint8_t *out)
-{
-  picoruby_nimble_event_rejections_t snapshot;
-  picoruby_nimble_get_event_rejections(&snapshot);
-  uint32_t values[3] = { snapshot.full, snapshot.too_large, snapshot.not_ready };
-  for (int reason = 0; reason < 3; reason++) {
-    uint32_t value = values[reason];
-    for (int byte = 0; byte < 4; byte++) {
-      out[4 * reason + byte] = (uint8_t)(value >> (8 * byte));
-    }
-  }
-  out[12] = (uint8_t)((snapshot.saturated ? PICORUBY_NIMBLE_REJECTION_SATURATED : 0) |
-                     (snapshot.copy_failed ? PICORUBY_NIMBLE_REJECTION_COPY_FAILED : 0) |
-                     (snapshot.write_rejected ? PICORUBY_NIMBLE_REJECTION_WRITE_REJECTED : 0));
-}
-
-void
 picoruby_nimble_reset_events(void)
 {
   taskENTER_CRITICAL(&evq_mux);
@@ -261,9 +207,7 @@ static int
 wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
 {
   if (ruby_handle == 0 || len == 0 || len > WRQ_PKT_MAX) {
-    taskENTER_CRITICAL(&evq_mux);
-    event_rejections.write_rejected = true;
-    taskEXIT_CRITICAL(&evq_mux);
+    ESP_LOGW(TAG, "write rejected: handle=%u len=%u", (unsigned)ruby_handle, (unsigned)len);
     return -1;
   }
   taskENTER_CRITICAL(&wrq_mux);
@@ -283,9 +227,6 @@ wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
     wrq_drop_logged = true;
     uint32_t dropped = wrq_dropped;
     taskEXIT_CRITICAL(&wrq_mux);
-    taskENTER_CRITICAL(&evq_mux);
-    record_event_rejection(&event_rejections.full);
-    taskEXIT_CRITICAL(&evq_mux);
     if (first) {
       ESP_LOGW(TAG, "write queue full (depth=%d), dropping; total dropped=%lu",
                WRQ_DEPTH, (unsigned long)dropped);

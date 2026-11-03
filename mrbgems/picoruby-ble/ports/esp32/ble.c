@@ -289,11 +289,12 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
       uint16_t out_len = 0;
       if (OS_MBUF_PKTLEN(ctxt->om) == 0) return 0;
       if (OS_MBUF_PKTLEN(ctxt->om) > sizeof(buf)) {
-        picoruby_nimble_record_oversized_event();
+        ESP_LOGW(BLE_TAG, "write exceeds capacity: handle=%u len=%u",
+                 (unsigned)e->ruby_handle, (unsigned)OS_MBUF_PKTLEN(ctxt->om));
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
       }
       if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len) != 0) {
-        picoruby_nimble_record_copy_failure();
+        ESP_LOGW(BLE_TAG, "write mbuf copy failed: handle=%u", (unsigned)e->ruby_handle);
         return BLE_ATT_ERR_UNLIKELY;
       }
       if (picoruby_nimble_enqueue_write(e->ruby_handle, buf, out_len) != 0) {
@@ -1119,7 +1120,6 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       if (role != BLE_ROLE_CENTRAL || !picoruby_ble_connection_matches(event->notify_rx.conn_handle)) break;
       uint16_t vlen = OS_MBUF_PKTLEN(event->notify_rx.om);
       if (vlen > VALUE_EVENT_DATA_MAX) {
-        picoruby_nimble_record_oversized_event();
         ESP_LOGW(BLE_TAG, "notification exceeds event capacity: %u", (unsigned)vlen);
         break;
       }
@@ -1129,7 +1129,6 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       put_le16(p + GATT_EVENT_PAYLOAD_OFFSET, event->notify_rx.attr_handle);
       put_le16(p + GATT_EVENT_PAYLOAD_OFFSET + 2, vlen);
       if (os_mbuf_copydata(event->notify_rx.om, 0, vlen, p + GATT_EVENT_PAYLOAD_OFFSET + 4) != 0) {
-        picoruby_nimble_record_copy_failure();
         ESP_LOGW(BLE_TAG, "notification mbuf copy failed");
         break;
       }
