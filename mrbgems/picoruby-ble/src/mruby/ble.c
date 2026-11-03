@@ -25,6 +25,7 @@ static bool ble_registered = false;
 static mrb_value write_values;
 static mrb_value read_values;
 static mrb_value event_queue;
+static uint8_t pending_event_count;
 /* C-heap copy of the GATT profile. BTstack keeps a raw pointer to it
  * indefinitely, which is why it is not owned by a Ruby object. */
 static uint8_t *profile_buf = NULL;
@@ -116,14 +117,11 @@ mrb_power_control_registration(mrb_state *mrb, mrb_value self)
   return mrb_true_value();
 }
 
-/* Coupled to the pinned Task::Queue @items layout. Direct C access keeps
- * admission and push in one non-yielding call, without Ruby overrides. */
 static bool
 ble_event_queue_has_capacity(void)
 {
   if (_mrb == NULL || !mrb_data_p(event_queue)) return false;
-  mrb_value items = mrb_iv_get(_mrb, event_queue, MRB_IVSYM(items));
-  return mrb_array_p(items) && RARRAY_LEN(items) < BLE_MAX_PENDING_EVENTS;
+  return pending_event_count < BLE_MAX_PENDING_EVENTS;
 }
 
 int
@@ -134,6 +132,7 @@ BLE_push_event(uint8_t *data, uint16_t size)
   int ai = mrb_gc_arena_save(_mrb);
   mrb_value event = mrb_str_new(_mrb, (const char *)data, size);
   if (mrb_task_queue_push(_mrb, event_queue, event) == MRB_TASK_QUEUE_PUSH_OK) {
+    pending_event_count++;
     result = 0;
   }
   mrb_gc_arena_restore(_mrb, ai);
@@ -147,6 +146,7 @@ BLE_heartbeat(void)
   mrb_state *mrb = _mrb;
   if (mrb_task_queue_push(mrb, event_queue, mrb_symbol_value(MRB_SYM(heartbeat))) ==
       MRB_TASK_QUEUE_PUSH_OK) {
+    pending_event_count++;
     return 0;
   }
   return -1;
@@ -156,7 +156,7 @@ static mrb_value
 mrb_event_popped(mrb_state *mrb, mrb_value self)
 {
   mrb_ble_check_active_owner(mrb, self);
-  /* Compatibility hook: capacity follows the queue, not delayed pop calls. */
+  if (pending_event_count > 0) pending_event_count--;
   return mrb_nil_value();
 }
 
@@ -170,12 +170,8 @@ mrb_event_queue_cleared(mrb_state *mrb, mrb_value self)
   if (_mrb != mrb || !mrb_data_p(event_queue)) {
     mrb_raise(mrb, E_TYPE_ERROR, "BLE event queue is not initialized");
   }
-  mrb_value items = mrb_iv_get(mrb, event_queue, MRB_IVSYM(items));
-  if (!mrb_array_p(items)) {
-    mrb_raise(mrb, E_TYPE_ERROR, "BLE event queue items must be an Array");
-  }
-  /* Clear and native reset stay in one C send; no Ruby clear override. */
-  mrb_ary_clear(mrb, items);
+  mrb_funcall_id(mrb, event_queue, MRB_SYM(clear), 0);
+  pending_event_count = 0;
 #ifdef PICORB_PLATFORM_ESP32
   picoruby_nimble_reset_events();
 #endif
@@ -371,6 +367,7 @@ mrb__init(mrb_state *mrb, mrb_value self)
 
   _mrb = mrb;
   event_queue = new_event_queue;
+  pending_event_count = 0;
   write_values = new_write_values;
   read_values = new_read_values;
 #ifdef PICORB_PLATFORM_ESP32

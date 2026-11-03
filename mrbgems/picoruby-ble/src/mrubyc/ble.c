@@ -8,6 +8,7 @@ static mrbc_value registered_ble = {.tt = MRBC_TT_NIL};
 static mrbc_value write_values = {.tt = MRBC_TT_NIL};
 static mrbc_value read_values = {.tt = MRBC_TT_NIL};
 static mrbc_value event_queue = {.tt = MRBC_TT_NIL};
+static uint8_t pending_event_count;
 /* C-heap copy of the GATT profile. BTstack keeps a raw pointer to it
  * indefinitely, which is why it is not owned by a Ruby object. */
 static uint8_t *profile_buf = NULL;
@@ -94,18 +95,11 @@ c_power_control_registration(mrbc_vm *vm, mrbc_value *v, int argc)
   SET_TRUE_RETURN();
 }
 
-/* Coupled to the pinned Task::Queue @items layout. Direct C access keeps
- * admission and push in one non-yielding call, without Ruby overrides. */
 static bool
 ble_event_queue_has_capacity(void)
 {
   if (event_queue.tt != MRBC_TT_OBJECT) return false;
-  mrbc_value items = mrbc_instance_getiv(&event_queue,
-                                        mrbc_str_to_symid("@items"));
-  bool has_capacity = items.tt == MRBC_TT_ARRAY &&
-                      mrbc_array_size(&items) < BLE_MAX_PENDING_EVENTS;
-  mrbc_decref(&items);
-  return has_capacity;
+  return pending_event_count < BLE_MAX_PENDING_EVENTS;
 }
 
 #define NODE_BOX_SIZE 10
@@ -120,6 +114,7 @@ BLE_push_event(uint8_t *data, uint16_t size)
   switch (mrbc_task_queue_push(&event_queue, &event)) {
     case MRBC_TASK_QUEUE_PUSH_OK:
     case MRBC_TASK_QUEUE_PUSH_OK_WOKE:
+      pending_event_count++;
       result = 0;
       break;
     default:
@@ -137,6 +132,7 @@ BLE_heartbeat(void)
   switch (mrbc_task_queue_push(&event_queue, &event)) {
     case MRBC_TASK_QUEUE_PUSH_OK:
     case MRBC_TASK_QUEUE_PUSH_OK_WOKE:
+      pending_event_count++;
       return 0;
     default:
       return -1;
@@ -151,7 +147,7 @@ c_event_popped(mrbc_vm *vm, mrbc_value *v, int argc)
     mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
     return;
   }
-  /* Compatibility hook: capacity follows the queue, not delayed pop calls. */
+  if (pending_event_count > 0) pending_event_count--;
   SET_NIL_RETURN();
 }
 
@@ -171,16 +167,10 @@ c_event_queue_cleared(mrbc_vm *vm, mrbc_value *v, int argc)
     mrbc_raise(vm, MRBC_CLASS(TypeError), "BLE event queue is not initialized");
     return;
   }
-  mrbc_value items = mrbc_instance_getiv(&event_queue,
-                                        mrbc_str_to_symid("@items"));
-  if (items.tt != MRBC_TT_ARRAY) {
-    mrbc_decref(&items);
-    mrbc_raise(vm, MRBC_CLASS(TypeError), "BLE event queue items must be an Array");
-    return;
-  }
-  /* Clear and native reset stay in one C send; no Ruby clear override. */
-  mrbc_array_clear(&items);
-  mrbc_decref(&items);
+  mrbc_value cleared = mrbc_send(vm, v, argc, &event_queue, "clear", 0);
+  mrbc_decref(&cleared);
+  if (mrbc_israised(vm)) return;
+  pending_event_count = 0;
 #ifdef PICORB_PLATFORM_ESP32
   picoruby_nimble_reset_events();
 #endif
@@ -416,6 +406,7 @@ c__init(mrbc_vm *vm, mrbc_value *v, int argc)
   mrbc_value prev_write_values = write_values;
   mrbc_value prev_read_values = read_values;
   event_queue = new_event_queue;
+  pending_event_count = 0;
   write_values = new_write_values;
   read_values = new_read_values;
   mrbc_decref(&prev_event_queue);
