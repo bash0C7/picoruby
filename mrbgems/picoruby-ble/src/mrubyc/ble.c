@@ -262,7 +262,7 @@ c_pop_write_value(mrbc_vm *vm, mrbc_value *v, int argc)
     SET_NIL_RETURN();
     return;
   }
-  /* pinned constructorは失敗時fatal。正常帰還より前にnative recordを消さない。 */
+  /* The pinned constructor is fatal on failure. Do not erase the native record before a normal return. */
   mrbc_value value = mrbc_string_new(vm, copy, len);
   if (picoruby_nimble_commit_write(&ticket)) SET_RETURN(value);
   else {

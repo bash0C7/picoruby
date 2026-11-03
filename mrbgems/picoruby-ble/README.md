@@ -122,12 +122,12 @@ MyScanner.new.scan(scan_type: :passive, timeout_ms: 10000)
 - `add_descriptor(properties, uuid, value)` - Add descriptor
 
 
-ESP32でのprofile検証:
+Profile validation on ESP32:
 
-- 各characteristic宣言の直後には、宣言したhandleとUUIDが一致するvalue entryが必要です。RBSとbuilderは`nil`の初期値を許しますが、その場合builderはvalue entryを省略します。この未完の宣言はESP32の初期化で失敗します。初期値が空の動的characteristicには、空String (`""`) と`DYNAMIC`を指定してください。
-- handleが0・重複・逆順の場合、所属のない属性、未完の宣言、adapterの定義・map・read mirror容量超過も、現在の登録を停止する前に拒否します。primary/secondary service、空service、通常のdescriptor、16/32/128-bitのbuilder UUIDは引き続き利用できます。
-- GATTの予約UUIDは16-bit表記とBluetooth-base128表記を同義として構造を分類します（CCCDの重複検査・自動生成CCCDへの対応づけ・Include-serviceの拒否を含む）。通常のvendor UUID、Stringのhandle_tableキー、宣言とvalueのUUID bytes、value propertiesは変更しません。
-- raw profileのInclude-service宣言は、このadapterには対応する変換がないため拒否します。CCCDは、`NOTIFY`または`INDICATE`のcharacteristicごとに、初期値が2バイトのゼロである単一のdescriptorをNimBLEの自動生成CCCDへ対応づけます。重複、異なる長さ、ゼロでない初期値、notify/indicateのないCCCDは拒否します。
+- Each characteristic declaration must be followed immediately by a value entry whose handle and UUID match the declaration. RBS and the builder allow a `nil` initial value, in which case the builder omits the value entry; such an incomplete declaration makes initialization fail on ESP32. For a dynamic characteristic with an empty initial value, pass an empty String (`""`) and `DYNAMIC`.
+- A zero, duplicate or descending handle, an attribute outside any service or characteristic, an incomplete declaration, and a profile that exceeds the adapter's definition, map or read mirror capacity are rejected before the current registration is stopped. Primary and secondary services, empty services, ordinary descriptors and 16/32/128-bit builder UUIDs remain supported.
+- Reserved GATT UUIDs are classified the same whether written in 16-bit form or in the Bluetooth base 128-bit form (including the CCCD duplicate check, the mapping to the auto-generated CCCD and the rejection of Include-service). Ordinary vendor UUIDs, String handle_table keys, the UUID bytes of declarations and values, and value properties are not changed.
+- Include-service declarations in a raw profile are rejected, because this adapter has no translation for them. For each `NOTIFY` or `INDICATE` characteristic, a single CCCD descriptor whose initial value is two zero bytes is mapped to the CCCD that NimBLE generates. Duplicate CCCDs, CCCDs of a different length or with a non-zero initial value, and CCCDs on a characteristic without notify or indicate are rejected.
 
 ### BLE::AdvertisingData
 

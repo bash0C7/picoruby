@@ -76,7 +76,7 @@ static const char *BLE_TAG = "prb_ble_evq";
 #define VALUE_EVENT_DATA_MAX (PICORUBY_NIMBLE_EVT_MAX - GATT_EVENT_PAYLOAD_OFFSET - 4)
 
 #if PICORUBY_NIMBLE_EVT_MAX != GATT_EVENT_PAYLOAD_OFFSET + 4 + BLE_ATT_MTU_MAX
-#error "BLE event 容量と SDK の MTU 最大値が一致しない"
+#error "BLE event capacity does not match the SDK maximum MTU"
 #endif
 
 #define RDM_SLOTS 16
@@ -306,7 +306,7 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
   }
 }
 
-/* VM専用。呼出元がString型・長さ上限を検査済み。入力のpointerを保持しない。 */
+/* VM only. The caller has already checked the String type and the length limit. Does not retain the input pointer. */
 void
 picoruby_ble_publish_read_value(uint16_t ruby_handle, const uint8_t *data, uint16_t size)
 {

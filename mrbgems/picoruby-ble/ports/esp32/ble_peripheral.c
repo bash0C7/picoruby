@@ -29,7 +29,7 @@ static bool central_connect_pending;
 static uint8_t central_connect_deferred;
 #define CONNECT_DEFERRED_REQUEST 0x01
 #define CONNECT_DEFERRED_RECORD 0x02
-/* 未生成の要求だけを保持し、生成済みCANや後続notifyの資源は予約しない。 */
+/* Holds only requests not yet generated, and does not reserve resources for an already generated CAN or for later notifies. */
 static bool send_permit_pending;
 static uint16_t send_permit_handle = 0xffff;
 
@@ -167,8 +167,8 @@ picoruby_ble_connection_handle_snapshot(void)
   return handle;
 }
 
-/* 接続gate内で、最小非空notifyのpayloadと独立headerを同時に実構成する。
- * 公開APIのみで固定SDKのl2cap_pktと同じleadingを置き、probeは送信しない。 */
+/* Inside the connection gate, actually builds the minimal non-empty notify payload and an independent header at the same time.
+ * Using only the public API, places the same leading bytes as the fixed SDK's l2cap_pkt; the probe sends nothing. */
 static struct os_mbuf *
 send_permit_probe(void)
 {

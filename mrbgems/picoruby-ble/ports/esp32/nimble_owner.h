@@ -10,7 +10,7 @@ extern "C" {
 
 typedef int (*picoruby_nimble_setup_fn)(void);
 
-// 固定 SDK の MTU 最大 527 + 既存 header 12。属性値の合法長とは別。
+// Fixed SDK maximum MTU 527 + existing header 12. Separate from the legal length of an attribute value.
 #define PICORUBY_NIMBLE_EVT_MAX 539
 
 int picoruby_nimble_start(picoruby_nimble_setup_fn setup);
@@ -46,25 +46,25 @@ typedef enum {
 } picoruby_nimble_event_class_t;
 
 picoruby_nimble_event_result_t picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class);
-// process全体の非破壊snapshot。outはnonnull。reset/start/stopでは消去しない。
+// Process-wide non-destructive snapshot. out is nonnull. Not cleared by reset/start/stop.
 void picoruby_nimble_get_event_rejections(picoruby_nimble_event_rejections_t *out);
 #define PICORUBY_NIMBLE_EVENT_REJECTION_SNAPSHOT_SIZE 13
 #define PICORUBY_NIMBLE_REJECTION_SATURATED 0x01
 #define PICORUBY_NIMBLE_REJECTION_COPY_FAILED 0x02
 #define PICORUBY_NIMBLE_REJECTION_WRITE_REJECTED 0x04
-// 3累積のLE値とflagsをcopyする。末尾byteのbit0は飽和、bit1はコピー失敗。
-// bit2はnative write入力検証での拒否。flagsは回数やsession帰属を表さない。
-// outは13byte以上。resetでも消去しない。
+// Copies the three cumulative LE values and the flags. Bit 0 of the last byte is saturation, bit 1 is copy failure.
+// Bit 2 is a rejection in native write input validation. The flags do not represent counts or session attribution.
+// out must be at least 13 bytes. Not cleared by reset either.
 void picoruby_nimble_copy_event_rejections(uint8_t *out);
 void picoruby_nimble_record_oversized_event(void);
 void picoruby_nimble_record_copy_failure(void);
 #define PICORUBY_NIMBLE_HOST_RESET_SNAPSHOT_SIZE 5
-// process累積のLE回数と飽和flag。outは5byte以上。new/start/同期成功では消去しない。
+// Process-cumulative LE count and saturation flag. out must be at least 5 bytes. Not cleared by new/start/successful sync.
 void picoruby_nimble_copy_host_reset_snapshot(uint8_t *out);
 void picoruby_nimble_reset_events(void);
 #define PICORUBY_NIMBLE_WRITE_MAX 512
 #define PICORUBY_NIMBLE_WRITE_DEPTH 16
-/* VM専用、非再入、peekからcommitまで同時consumerなし。copyは呼出元のnative領域。 */
+/* VM only, non-reentrant, no concurrent consumer from peek to commit. The copy is the caller's native area. */
 typedef struct {
   uint32_t queue_generation;
   uint32_t slot_generation;

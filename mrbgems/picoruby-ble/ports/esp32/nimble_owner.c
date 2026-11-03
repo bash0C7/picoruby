@@ -64,7 +64,7 @@ typedef struct {
   uint8_t data[EVQ_PKT_MAX];
 } evq_entry_t;
 
-// 遅延 callback に備え、確保後は元の static 配列と同じ寿命で保持する。
+// In preparation for delayed callbacks, once allocated it is kept for the same lifetime as the original static array.
 static evq_entry_t *evq = NULL;
 static int evq_head = 0;
 static int evq_count = 0;
@@ -94,7 +94,7 @@ static int wrq_count = 0;
 static int wrq_cccd_reserved = 0;
 static int wrq_cccd_queued = 0;
 static uint32_t wrq_generation = 0;
-/* resetで無効化し、次のVM peekだけが再設定する。世代wrapでも旧ticketを復活させない。 */
+/* Invalidated by reset; only the next VM peek sets it again. An old ticket is not revived even when the generation wraps. */
 static bool wrq_snapshot_valid = false;
 static int wrq_snapshot_slot = -1;
 static uint32_t wrq_dropped = 0;
@@ -158,7 +158,7 @@ reserve_event_storage(void)
   return 0;
 }
 
-// evq_muxを保持して呼ぶ。累積は飽和させ、未観測の拒否をwrapで消さない。
+// Call with evq_mux held. The cumulative count saturates so that unobserved rejections are not erased by a wrap.
 static void
 record_event_rejection(uint32_t *counter)
 {
@@ -166,7 +166,7 @@ record_event_rejection(uint32_t *counter)
   else (*counter)++;
 }
 
-// event作成前の拒否も、enqueue後の拒否と同じ非破壊snapshotへ記録する。
+// Rejections before an event is created are recorded in the same non-destructive snapshot as rejections after enqueue.
 void
 picoruby_nimble_record_oversized_event(void)
 {

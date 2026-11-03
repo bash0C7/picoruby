@@ -103,7 +103,7 @@ class BLE
   attr_reader :role
   attr_accessor :debug
 
-  # nativeから取得した最新のprocess累積。sessionの拒否件数ではない。
+  # Latest process-wide cumulative value fetched from native. Not the rejection count of a session.
   def event_rejection_snapshot
     snapshot = _event_rejection_snapshot
     snapshot&.dup

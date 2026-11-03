@@ -243,7 +243,7 @@ mrb_pop_write_value(mrb_state *mrb, mrb_value self)
   uint16_t len;
   picoruby_nimble_write_ticket_t ticket;
   if (!picoruby_nimble_peek_write((uint16_t)handle, copy, &len, &ticket)) return mrb_nil_value();
-  /* 例外ならcommitへ到達しない。Stringはnative copyから所有データを作る。 */
+  /* On an exception, commit is not reached. A String builds its owned data from the native copy. */
   mrb_value value = mrb_str_new(mrb, (const char *)copy, len);
   return picoruby_nimble_commit_write(&ticket) ? value : mrb_nil_value();
 #else
