@@ -69,6 +69,8 @@ static evq_entry_t *evq = NULL;
 static int evq_head = 0;
 static int evq_count = 0;
 static uint32_t evq_gen = 0;
+static uint32_t evq_dropped = 0;
+static bool evq_full_logged = false;
 static portMUX_TYPE evq_mux = portMUX_INITIALIZER_UNLOCKED;
 static picoruby_nimble_event_rejections_t event_rejections;
 static uint32_t host_reset_count;
@@ -199,9 +201,18 @@ picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_
   int limit = event_class == PICORUBY_NIMBLE_EVENT_CONTROL ? EVQ_DEPTH : EVQ_DATA_DEPTH;
   if (evq_count >= limit) {
     record_event_rejection(&event_rejections.full);
+    evq_dropped++;
+    bool first = !evq_full_logged;
+    evq_full_logged = true;
+    uint32_t dropped = evq_dropped;
     taskEXIT_CRITICAL(&evq_mux);
+    if (first) {
+      ESP_LOGW(TAG, "event queue full (limit=%d), dropping newest; total dropped=%lu",
+               limit, (unsigned long)dropped);
+    }
     return PICORUBY_NIMBLE_EVENT_FULL;
   }
+  if (evq_count == 0) evq_full_logged = false;
   int slot = (evq_head + evq_count) % EVQ_DEPTH;
   evq[slot].len = len;
   memcpy(evq[slot].data, pkt, len);
@@ -285,16 +296,18 @@ wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
     wrq_dropped++;
     bool first = !wrq_drop_logged;
     wrq_drop_logged = true;
+    uint32_t dropped = wrq_dropped;
     taskEXIT_CRITICAL(&wrq_mux);
     taskENTER_CRITICAL(&evq_mux);
     record_event_rejection(&event_rejections.full);
     taskEXIT_CRITICAL(&evq_mux);
     if (first) {
       ESP_LOGW(TAG, "write queue full (depth=%d), dropping; total dropped=%lu",
-               WRQ_DEPTH, (unsigned long)wrq_dropped);
+               WRQ_DEPTH, (unsigned long)dropped);
     }
     return -1;
   }
+  if (wrq_count == 0) wrq_drop_logged = false;
   int slot = 0;
   while (wrq[slot].occupied) slot++;
   wrq[slot].occupied = true;
