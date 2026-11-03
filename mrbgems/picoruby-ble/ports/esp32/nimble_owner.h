@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "../../include/ble.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,12 +18,10 @@ typedef int (*picoruby_nimble_setup_fn)(void);
 int picoruby_nimble_start(picoruby_nimble_setup_fn setup);
 int picoruby_nimble_stop(void);
 bool picoruby_nimble_started(void);
-bool picoruby_nimble_ready(void);
 /* Fixed native latch; cleared only immediately before a new host starts. */
 #define PICORUBY_NIMBLE_CONTROL_WORK_LOST 0x01
 #define PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST 0x08
 void picoruby_nimble_cancel_control(uint8_t reason);
-uint8_t picoruby_nimble_control_fault(void);
 bool picoruby_nimble_cleanup_blocked(void);
 uint8_t picoruby_nimble_own_addr_type(void);
 typedef enum {
@@ -37,28 +37,14 @@ typedef enum {
 } picoruby_nimble_event_class_t;
 
 picoruby_nimble_event_result_t picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class);
-void picoruby_nimble_reset_events(void);
-#define PICORUBY_NIMBLE_WRITE_MAX 512
 #define PICORUBY_NIMBLE_WRITE_DEPTH 16
-/* VM only, non-reentrant, no concurrent consumer from peek to commit. The copy is the caller's native area. */
-typedef struct {
-  uint32_t queue_generation;
-  uint32_t slot_generation;
-  uint16_t ruby_handle;
-  int16_t slot;
-} picoruby_nimble_write_ticket_t;
-int picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
 int picoruby_nimble_enqueue_cccd(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
 void picoruby_nimble_reserve_cccd_writes(int count);
-bool picoruby_nimble_peek_write(uint16_t ruby_handle, uint8_t *copy, uint16_t *len,
-                               picoruby_nimble_write_ticket_t *ticket);
-bool picoruby_nimble_commit_write(const picoruby_nimble_write_ticket_t *ticket);
 void picoruby_nimble_reset_writes(void);
 void picoruby_nimble_heartbeat_enable(bool enable);
 void picoruby_nimble_halting_watchdog_start(void);
 void picoruby_nimble_halting_watchdog_stop(void);
 void picoruby_nimble_pump(void);
-void picoruby_nimble_attach_vm(void *vm);
 
 #ifdef __cplusplus
 }

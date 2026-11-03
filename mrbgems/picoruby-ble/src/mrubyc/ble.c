@@ -1,8 +1,3 @@
-#ifdef PICORB_PLATFORM_ESP32
-#include "../../ports/esp32/nimble_owner.h"
-#include "../../ports/esp32/ble_common.h"
-#endif
-
 /* Keep the identity alive: a raw pointer can be reused after refcount release. */
 static mrbc_value registered_ble = {.tt = MRBC_TT_NIL};
 static mrbc_value write_values = {.tt = MRBC_TT_NIL};

@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "../../include/ble.h"
+
 struct ble_gap_event;
 struct ble_gap_conn_desc;
 struct ble_gatt_register_ctxt;
@@ -51,8 +53,6 @@ int picoruby_ble_att_payload_status(uint16_t handle, uint16_t size);
 int picoruby_ble_gap_event(struct ble_gap_event *event, void *arg);
 void picoruby_ble_gatts_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg);
 uint16_t picoruby_ble_handle_r2n(uint16_t ruby_handle);
-#define PICORUBY_BLE_READ_MIRROR_MAX 256
-void picoruby_ble_publish_read_value(uint16_t ruby_handle, const uint8_t *data, uint16_t size);
 void picoruby_ble_refresh_read_mirrors(void);
 int picoruby_ble_peripheral_setup(void);
 void picoruby_ble_peripheral_rearm_adv(void);

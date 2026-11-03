@@ -7,11 +7,6 @@
 #include "mruby/error.h"
 #include "task.h"
 
-#ifdef PICORB_PLATFORM_ESP32
-#include "../../ports/esp32/nimble_owner.h"
-#include "../../ports/esp32/ble_common.h"
-#endif
-
 /*
  * Keep one root for the current receiver identity and one for each cached
  * queue/hash. BLE#initialize can replace the receiver's ivars before _init
