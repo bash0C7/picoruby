@@ -146,11 +146,6 @@ class BLE
                     state == :TC_W4_CHARACTERISTIC_VALUE_RESULT ||
                     state == :TC_W4_ALL_CHARACTERISTIC_DESCRIPTORS_RESULT ||
                     state == :TC_W4_CHARACTERISTIC_DESCRIPTOR_VALUE_RESULT
-      if event_type == GATT_EVENT_QUERY_COMPLETE && event_packet.getbyte(GATT_EVENT_PAYLOAD_OFFSET) != 0
-        reset_state
-        @state = :TC_IDLE
-        return
-      end
       # Build @services
       case state
       when :TC_W4_SERVICE_RESULT
