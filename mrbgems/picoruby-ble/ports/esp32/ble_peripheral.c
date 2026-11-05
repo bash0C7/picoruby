@@ -170,33 +170,12 @@ picoruby_ble_connection_handle_snapshot(void)
 static struct os_mbuf *
 send_permit_probe(void)
 {
+  struct os_mbuf *header = ble_hs_mbuf_att_pkt();
+  if (header == NULL) return NULL;
   uint8_t dummy = 0;
   struct os_mbuf *payload = ble_hs_mbuf_from_flat(&dummy, 1);
-  if (payload == NULL) return NULL;
-
-  uint16_t user_hdr_len = 0;
-#if MYNEWT_VAL(BLE_CONTROLLER)
-  user_hdr_len = sizeof(struct ble_mbuf_hdr);
-#endif
-  struct os_mbuf *header = os_msys_get_pkthdr(0, user_hdr_len);
-  if (header == NULL) {
-    os_mbuf_free_chain(payload);
-    return NULL;
-  }
-
-  uint16_t leading = 4 + 4 + 1;
-#if !CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE
-  leading += BLE_HS_CTRL_DATA_HDR_SZ;
-#endif
-  if (OS_MBUF_TRAILINGSPACE(header) < leading) {
+  if (payload == NULL) {
     os_mbuf_free_chain(header);
-    os_mbuf_free_chain(payload);
-    return NULL;
-  }
-  header->om_data += leading;
-  if (os_mbuf_extend(header, 3) == NULL) {
-    os_mbuf_free_chain(header);
-    os_mbuf_free_chain(payload);
     return NULL;
   }
   os_mbuf_concat(header, payload);

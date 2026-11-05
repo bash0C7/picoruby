@@ -373,7 +373,9 @@ halting_timer_cb(void *arg)
 void
 picoruby_nimble_halting_watchdog_start(void)
 {
-  if (halting_timer) esp_timer_start_once(halting_timer, HALTING_WATCHDOG_US);
+  if (halting_timer == NULL) return;
+  esp_err_t err = esp_timer_start_once(halting_timer, HALTING_WATCHDOG_US);
+  if (err != ESP_OK) ESP_LOGE(TAG, "halting watchdog start failed: %d", err);
 }
 
 void
@@ -418,7 +420,10 @@ picoruby_nimble_heartbeat_enable(bool enable)
     if (heartbeat_depth == 0) stop_timer = true;
   }
   taskEXIT_CRITICAL(&owner_state_mux);
-  if (start_timer) esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_PERIOD_US);
+  if (start_timer) {
+    esp_err_t err = esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_PERIOD_US);
+    if (err != ESP_OK) ESP_LOGE(TAG, "heartbeat timer start failed: %d", err);
+  }
   if (stop_timer) esp_timer_stop(heartbeat_timer);
 }
 
