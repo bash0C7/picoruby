@@ -167,18 +167,13 @@ mrb_event_queue_cleared(mrb_state *mrb, mrb_value self)
   }
   mrb_funcall_id(mrb, event_queue, MRB_SYM(clear), 0);
   pending_event_count = 0;
-#ifdef PICORB_PLATFORM_ESP32
-  picoruby_nimble_reset_events();
-#endif
+  BLE_events_cleared();
   return mrb_nil_value();
 }
 
 int
 BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
 {
-#ifdef PICORB_PLATFORM_ESP32
-  return picoruby_nimble_enqueue_write(att_handle, data, size);
-#else
   if (att_handle == 0 || size == 0 || _mrb == NULL || mrb_hash_p(write_values) == false) {
     return -1;
   }
@@ -193,7 +188,6 @@ BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
   mrb_ary_push(_mrb, queue, write_value);
   mrb_gc_arena_restore(_mrb, ai);
   return 0;
-#endif
 }
 
 int
@@ -216,22 +210,12 @@ mrb_pop_write_value(mrb_state *mrb, mrb_value self)
   mrb_int handle;
   mrb_get_args(mrb, "i", &handle);
   if (handle <= 0 || handle > UINT16_MAX) return mrb_nil_value();
-#ifdef PICORB_PLATFORM_ESP32
-  uint8_t copy[PICORUBY_NIMBLE_WRITE_MAX];
-  uint16_t len;
-  picoruby_nimble_write_ticket_t ticket;
-  if (!picoruby_nimble_peek_write((uint16_t)handle, copy, &len, &ticket)) return mrb_nil_value();
-  /* On an exception, commit is not reached. A String builds its owned data from the native copy. */
-  mrb_value value = mrb_str_new(mrb, (const char *)copy, len);
-  return picoruby_nimble_commit_write(&ticket) ? value : mrb_nil_value();
-#else
   mrb_value key = mrb_int_value(mrb, handle);
   mrb_value queue = mrb_hash_get(mrb, write_values, key);
   if (!mrb_array_p(queue) || RARRAY_LEN(queue) == 0) {
     return mrb_nil_value();
   }
   return mrb_ary_shift(mrb, queue);
-#endif
 }
 
 static mrb_value
@@ -243,19 +227,8 @@ mrb_push_read_value(mrb_state *mrb, mrb_value self)
   mrb_get_args(mrb, "iS", &handle, &read_value);
   if (handle < 1 || handle > UINT16_MAX) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid ATT handle");
   if (RSTRING_LEN(read_value) > UINT16_MAX) mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE read value exceeds 65535 bytes");
-#ifdef PICORB_PLATFORM_ESP32
-  if (RSTRING_LEN(read_value) > PICORUBY_BLE_READ_MIRROR_MAX) {
-    mrb_raise(mrb, E_RANGE_ERROR, "BLE read value exceeds mirror capacity");
-  }
-#endif
   mrb_hash_set(mrb, read_values, mrb_int_value(mrb, handle), read_value);
-#ifdef PICORB_PLATFORM_ESP32
-  if (handle > 0 && handle <= UINT16_MAX) {
-    picoruby_ble_publish_read_value((uint16_t)handle,
-                                   (const uint8_t *)RSTRING_PTR(read_value),
-                                   (uint16_t)RSTRING_LEN(read_value));
-  }
-#endif
+  BLE_read_value_pushed((uint16_t)handle, (const uint8_t *)RSTRING_PTR(read_value), (uint16_t)RSTRING_LEN(read_value));
   return read_value;
 }
 
@@ -352,9 +325,7 @@ mrb__init(mrb_state *mrb, mrb_value self)
   pending_event_count = 0;
   write_values = new_write_values;
   read_values = new_read_values;
-#ifdef PICORB_PLATFORM_ESP32
-  picoruby_nimble_attach_vm(mrb);
-#endif
+  BLE_vm_attached(mrb);
 
   if (release_graphs) {
     mrb_gc_unregister(mrb, prev_event_queue);
@@ -372,11 +343,8 @@ mrb_control_fault(mrb_state *mrb, mrb_value self)
 {
   mrb_ble_check_active_owner(mrb, self);
   mrb_get_args(mrb, "");
-#ifdef PICORB_PLATFORM_ESP32
-  return mrb_int_value(mrb, picoruby_nimble_control_fault());
-#else
-  return mrb_nil_value();
-#endif
+  int fault = BLE_control_fault();
+  return fault < 0 ? mrb_nil_value() : mrb_int_value(mrb, fault);
 }
 
 static mrb_value

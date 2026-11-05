@@ -20,6 +20,8 @@
 #include "ble_common.h"
 #include "nimble_owner.h"
 
+#define BTSTACK_ACL_BUFFERS_FULL 0x57
+
 static const char *BLE_TAG = "prb_ble_peripheral";
 
 /* All entry points take this gate before adv_mutex or SDK host locks.
@@ -320,7 +322,7 @@ BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len_in, bool connec
   }
   xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
-  return rc;
+  return rc == 0 ? 0 : -1;
 }
 
 void
@@ -380,6 +382,13 @@ picoruby_ble_peripheral_resume_adv(void)
   picoruby_ble_connection_gate_exit();
 }
 
+static int
+notify_status(int rc)
+{
+  if (rc == BLE_HS_ENOMEM) return BTSTACK_ACL_BUFFERS_FULL;
+  return picoruby_ble_request_status(rc);
+}
+
 int
 BLE_peripheral_notify(uint16_t att_handle)
 {
@@ -393,17 +402,17 @@ BLE_peripheral_notify(uint16_t att_handle)
    * cannot finish and process a reused handle while this operation runs. */
   if (!picoruby_ble_connection_matches(handle)) {
     picoruby_ble_connection_gate_exit();
-    return BLE_HS_ENOTCONN;
+    return notify_status(BLE_HS_ENOTCONN);
   }
   int payload_rc = picoruby_ble_att_payload_status(handle, read_value.size);
   if (payload_rc != 0) {
     picoruby_ble_connection_gate_exit();
-    return payload_rc;
+    return notify_status(payload_rc);
   }
   struct os_mbuf *om = ble_hs_mbuf_from_flat(read_value.data, read_value.size);
   int rc = om == NULL ? BLE_HS_ENOMEM : ble_gatts_notify_custom(handle, nimble_handle, om);
   picoruby_ble_connection_gate_exit();
-  return rc;
+  return notify_status(rc);
 }
 
 void

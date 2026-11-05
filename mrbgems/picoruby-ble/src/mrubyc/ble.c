@@ -166,18 +166,13 @@ c_event_queue_cleared(mrbc_vm *vm, mrbc_value *v, int argc)
   mrbc_decref(&cleared);
   if (mrbc_israised(vm)) return;
   pending_event_count = 0;
-#ifdef PICORB_PLATFORM_ESP32
-  picoruby_nimble_reset_events();
-#endif
+  BLE_events_cleared();
   SET_NIL_RETURN();
 }
 
 int
 BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
 {
-#ifdef PICORB_PLATFORM_ESP32
-  return picoruby_nimble_enqueue_write(att_handle, data, size);
-#else
   if (att_handle == 0 || size == 0 || write_values.tt == MRBC_TT_NIL) {
     return -1;
   }
@@ -190,7 +185,6 @@ BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
   }
   mrbc_array_push(&queue, &write_value);
   return 0;
-#endif
 }
 
 int
@@ -225,22 +219,6 @@ c_pop_write_value(mrbc_vm *vm, mrbc_value *v, int argc)
     SET_NIL_RETURN();
     return;
   }
-#ifdef PICORB_PLATFORM_ESP32
-  uint8_t copy[PICORUBY_NIMBLE_WRITE_MAX];
-  uint16_t len;
-  picoruby_nimble_write_ticket_t ticket;
-  if (!picoruby_nimble_peek_write((uint16_t)handle, copy, &len, &ticket)) {
-    SET_NIL_RETURN();
-    return;
-  }
-  /* The pinned constructor is fatal on failure. Do not erase the native record before a normal return. */
-  mrbc_value value = mrbc_string_new(vm, copy, len);
-  if (picoruby_nimble_commit_write(&ticket)) SET_RETURN(value);
-  else {
-    mrbc_decref(&value);
-    SET_NIL_RETURN();
-  }
-#else
   mrbc_value key = GET_ARG(1);
   mrbc_value queue = mrbc_hash_get(&write_values, &key);
   if (queue.tt != MRBC_TT_ARRAY || mrbc_array_size(&queue) == 0) {
@@ -249,7 +227,6 @@ c_pop_write_value(mrbc_vm *vm, mrbc_value *v, int argc)
   }
   mrbc_value value = mrbc_array_shift(&queue);
   SET_RETURN(value);
-#endif
 }
 
 static void
@@ -278,20 +255,9 @@ c_push_read_value(mrbc_vm *vm, mrbc_value *v, int argc)
     mrbc_raise(vm, MRBC_CLASS(ArgumentError), "BLE read value exceeds 65535 bytes");
     return;
   }
-#ifdef PICORB_PLATFORM_ESP32
-  if (read_value.string->size > PICORUBY_BLE_READ_MIRROR_MAX) {
-    mrbc_raise(vm, MRBC_CLASS(RangeError), "BLE read value exceeds mirror capacity");
-    return;
-  }
-#endif
   mrbc_incref(&read_value);  // for hash ownership
   mrbc_hash_set(&read_values, &handle, &read_value);
-#ifdef PICORB_PLATFORM_ESP32
-  if (handle.tt == MRBC_TT_INTEGER && handle.i > 0 && handle.i <= UINT16_MAX) {
-    picoruby_ble_publish_read_value((uint16_t)handle.i, read_value.string->data,
-                                   (uint16_t)read_value.string->size);
-  }
-#endif
+  BLE_read_value_pushed((uint16_t)handle.i, read_value.string->data, (uint16_t)read_value.string->size);
   mrbc_incref(&read_value);  // for return value
   SET_RETURN(read_value);
 }
@@ -395,6 +361,7 @@ c__init(mrbc_vm *vm, mrbc_value *v, int argc)
   mrbc_decref(&prev_read_values);
   mrbc_decref(&prev_ble);
 
+  BLE_vm_attached(vm);
   Machine_tud_task();
 }
 
@@ -406,11 +373,12 @@ c_control_fault(mrbc_vm *vm, mrbc_value *v, int argc)
     mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
     return;
   }
-#ifdef PICORB_PLATFORM_ESP32
-  SET_INT_RETURN(picoruby_nimble_control_fault());
-#else
-  SET_NIL_RETURN();
-#endif
+  int fault = BLE_control_fault();
+  if (fault < 0) {
+    SET_NIL_RETURN();
+  } else {
+    SET_INT_RETURN(fault);
+  }
 }
 
 static void

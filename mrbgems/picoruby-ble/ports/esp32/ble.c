@@ -80,7 +80,7 @@ static const char *BLE_TAG = "prb_ble_evq";
 #endif
 
 #define RDM_SLOTS 16
-#define RDM_MAX PICORUBY_BLE_READ_MIRROR_MAX
+#define RDM_MAX BLE_ATT_ATTR_MAX_LEN
 
 static enum BLE_role_t role = BLE_ROLE_NONE;
 static bool power_on_requested = false;
@@ -92,6 +92,7 @@ static uintptr_t central_connect_serial;
 static uint8_t  rdm_buf[RDM_SLOTS][RDM_MAX];
 static uint16_t rdm_len[RDM_SLOTS];
 static bool     rdm_valid[RDM_SLOTS];
+static bool     rdm_oversize[RDM_SLOTS];
 static int      rdm_used = 0;
 static portMUX_TYPE rdm_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -236,14 +237,24 @@ peripheral_adopt(uint16_t handle)
 static int
 gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-  (void)attr_handle;
-  if (!picoruby_ble_connection_gate_enter()) return BLE_ATT_ERR_UNLIKELY;
+  if (!picoruby_ble_connection_gate_enter()) {
+    ESP_LOGW(BLE_TAG, "ATT access rejected: connection gate unavailable");
+    return BLE_ATT_ERR_UNLIKELY;
+  }
   peripheral_adopt(conn);
   bool matching = picoruby_ble_connection_matches(conn);
   picoruby_ble_connection_gate_exit();
-  if (!matching) return BLE_ATT_ERR_UNLIKELY;
+  if (!matching) {
+    ESP_LOGW(BLE_TAG, "ATT access rejected: no matching connection: conn=%u handle=%u op=%u",
+             (unsigned)conn, (unsigned)attr_handle, (unsigned)ctxt->op);
+    return BLE_ATT_ERR_UNLIKELY;
+  }
   attr_map_t *e = (attr_map_t *)arg;
-  if (e == NULL) return BLE_ATT_ERR_UNLIKELY;
+  if (e == NULL) {
+    ESP_LOGW(BLE_TAG, "ATT access rejected: no attribute map: handle=%u op=%u",
+             (unsigned)attr_handle, (unsigned)ctxt->op);
+    return BLE_ATT_ERR_UNLIKELY;
+  }
 
   switch (ctxt->op) {
     case BLE_GATT_ACCESS_OP_READ_CHR:
@@ -257,15 +268,14 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
       if (e->mirror_slot >= 0) {
         uint16_t n;
         bool valid;
+        bool oversize;
         taskENTER_CRITICAL(&rdm_mux);
         n = rdm_len[e->mirror_slot];
         valid = rdm_valid[e->mirror_slot];
-        if (valid && n > RDM_MAX) {
-          taskEXIT_CRITICAL(&rdm_mux);
-          return BLE_ATT_ERR_INSUFFICIENT_RES;
-        }
+        oversize = rdm_oversize[e->mirror_slot];
         if (n > 0) memcpy(rd_tmp, rdm_buf[e->mirror_slot], n);
         taskEXIT_CRITICAL(&rdm_mux);
+        if (oversize) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         if (valid) {
           data = rd_tmp;
           len = n;
@@ -307,18 +317,30 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
   }
 }
 
-/* VM only. The caller has already checked the String type and the length limit. Does not retain the input pointer. */
+static void
+mirror_store(int slot, uint16_t ruby_handle, const uint8_t *data, uint16_t size)
+{
+  bool oversize = size > RDM_MAX;
+  taskENTER_CRITICAL(&rdm_mux);
+  if (!oversize && size > 0) memcpy(rdm_buf[slot], data, size);
+  rdm_len[slot] = oversize ? 0 : size;
+  rdm_valid[slot] = true;
+  bool newly_oversize = oversize && !rdm_oversize[slot];
+  rdm_oversize[slot] = oversize;
+  taskEXIT_CRITICAL(&rdm_mux);
+  if (newly_oversize) {
+    ESP_LOGW(BLE_TAG, "read value exceeds mirror capacity: handle=%u len=%u",
+             (unsigned)ruby_handle, (unsigned)size);
+  }
+}
+
 void
-picoruby_ble_publish_read_value(uint16_t ruby_handle, const uint8_t *data, uint16_t size)
+BLE_read_value_pushed(uint16_t att_handle, const uint8_t *data, uint16_t size)
 {
   for (int i = 0; i < attr_map_count; i++) {
     attr_map_t *e = &attr_map[i];
-    if (e->ruby_handle != ruby_handle || e->mirror_slot < 0) continue;
-    taskENTER_CRITICAL(&rdm_mux);
-    if (size > 0) memcpy(rdm_buf[e->mirror_slot], data, size);
-    rdm_len[e->mirror_slot] = size;
-    rdm_valid[e->mirror_slot] = true;
-    taskEXIT_CRITICAL(&rdm_mux);
+    if (e->ruby_handle != att_handle || e->mirror_slot < 0) continue;
+    mirror_store(e->mirror_slot, att_handle, data, size);
     return;
   }
 }
@@ -334,11 +356,7 @@ picoruby_ble_refresh_read_mirrors(void)
     if (BLE_read_data(&rv) != 0 || rv.data == NULL) continue;
     uint16_t n = rv.size;
     if (n <= RDM_MAX) memcpy(tmp, rv.data, n);
-    taskENTER_CRITICAL(&rdm_mux);
-    if (n <= RDM_MAX) memcpy(rdm_buf[e->mirror_slot], tmp, n);
-    rdm_len[e->mirror_slot] = n;
-    rdm_valid[e->mirror_slot] = true;
-    taskEXIT_CRITICAL(&rdm_mux);
+    mirror_store(e->mirror_slot, e->ruby_handle, tmp, n);
   }
 }
 
@@ -526,6 +544,7 @@ mirror_assign(attr_map_t *e, uint16_t flags)
   e->mirror_slot = (int16_t)rdm_used++;
   rdm_len[e->mirror_slot] = 0;
   rdm_valid[e->mirror_slot] = false;
+  rdm_oversize[e->mirror_slot] = false;
   return 0;
 }
 
@@ -820,6 +839,7 @@ parse_att_db(const uint8_t *db, size_t db_len)
   memset(uuid_pool, 0, sizeof(uuid_pool));
   memset(rdm_len, 0, sizeof(rdm_len));
   memset(rdm_valid, 0, sizeof(rdm_valid));
+  memset(rdm_oversize, 0, sizeof(rdm_oversize));
   return -1;
 }
 
@@ -890,6 +910,7 @@ static uint8_t
 status_to_u8(uint16_t status)
 {
   if (status == 0 || status == BLE_HS_EDONE) return 0;
+  if (status < BLE_HS_ERR_ATT_BASE) return picoruby_ble_request_status(status);
   return (status & 0xff) ? (uint8_t)status : 0xff;
 }
 
@@ -1439,7 +1460,10 @@ BLE_gap_local_bd_addr(uint8_t *local_addr)
   }
   uint8_t le[6];
   int rc = ble_hs_id_copy_addr(id_type, le, NULL);
-  if (rc != 0) return rc;
+  if (rc != 0) {
+    ESP_LOGW(BLE_TAG, "local address unavailable: %d", rc);
+    return -1;
+  }
   for (int i = 0; i < 6; i++) local_addr[i] = le[5 - i];
   return 0;
 }
@@ -1533,13 +1557,13 @@ att_status(int status)
   return ATT_ERROR_UNLIKELY_ERROR;
 }
 
-static uint8_t
-request_status(int rc)
+uint8_t
+picoruby_ble_request_status(int rc)
 {
   if (rc == 0) return 0;
   if (rc == BLE_HS_ENOTCONN) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (rc == BLE_HS_ENOMEM) return ERROR_CODE_MEMORY_CAPACITY_EXCEEDED;
-  ESP_LOGW(BLE_TAG, "GATT request failed: %d", rc);
+  ESP_LOGW(BLE_TAG, "BLE request failed: %d", rc);
   return ERROR_CODE_UNSPECIFIED_ERROR;
 }
 
@@ -1664,7 +1688,7 @@ BLE_discover_primary_services_on_connection(uint16_t conn_handle)
   if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
   int rc = ble_gattc_disc_all_svcs(conn_handle, disc_svc_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return request_status(rc);
+  return picoruby_ble_request_status(rc);
 }
 
 static uint8_t
@@ -1701,7 +1725,7 @@ BLE_discover_characteristics_for_service_on_connection(uint16_t conn_handle, uin
     taskEXIT_CRITICAL(&chr_disc_mux);
   }
   gatt_request_returned(conn_handle, rc);
-  return request_status(rc);
+  return picoruby_ble_request_status(rc);
 }
 
 static uint8_t
@@ -1710,7 +1734,7 @@ BLE_read_value_of_characteristic_using_value_handle_on_connection(uint16_t conn_
   if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
   int rc = ble_gattc_read(conn_handle, value_handle, read_attr_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return request_status(rc);
+  return picoruby_ble_request_status(rc);
 }
 
 static uint8_t
@@ -1719,7 +1743,7 @@ BLE_discover_characteristic_descriptors_on_connection(uint16_t conn_handle, uint
   if (gatt_request_begin(conn_handle) != 0) return GATT_CLIENT_IN_WRONG_STATE;
   int rc = ble_gattc_disc_all_dscs(conn_handle, value_handle, end_handle, disc_dsc_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return request_status(rc);
+  return picoruby_ble_request_status(rc);
 }
 
 static uint8_t
@@ -1729,7 +1753,7 @@ BLE_write_value_of_characteristic_without_response_on_connection(uint16_t conn_h
   if (rc == BLE_HS_EMSGSIZE) return GATT_CLIENT_VALUE_TOO_LONG;
   if (rc == 0) rc = ble_gattc_write_no_rsp_flat(conn_handle, value_handle, data, size);
   if (rc == BLE_HS_ENOMEM) return GATT_CLIENT_BUSY;
-  return request_status(rc);
+  return picoruby_ble_request_status(rc);
 }
 
 static uint8_t
@@ -1744,7 +1768,7 @@ BLE_write_characteristic_descriptor_using_descriptor_handle_on_connection(uint16
   }
   if (rc == 0) rc = ble_gattc_write_flat(conn_handle, descriptor_handle, data, size, write_attr_cb, NULL);
   gatt_request_returned(conn_handle, rc);
-  return request_status(rc);
+  return picoruby_ble_request_status(rc);
 }
 
 uint8_t
@@ -1823,4 +1847,28 @@ BLE_write_characteristic_descriptor_using_descriptor_handle(uint16_t conn_handle
   uint8_t rc = BLE_write_characteristic_descriptor_using_descriptor_handle_on_connection(conn_handle, descriptor_handle, data, size);
   picoruby_ble_connection_gate_exit();
   return rc;
+}
+
+bool
+BLE_ready(void)
+{
+  return picoruby_nimble_ready();
+}
+
+int
+BLE_control_fault(void)
+{
+  return picoruby_nimble_control_fault();
+}
+
+void
+BLE_vm_attached(void *vm)
+{
+  picoruby_nimble_attach_vm(vm);
+}
+
+void
+BLE_events_cleared(void)
+{
+  picoruby_nimble_reset_events();
 }

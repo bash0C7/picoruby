@@ -39,35 +39,11 @@ typedef struct {
   uint16_t size;
 } BLE_read_value_t;
 
-#ifdef PICORB_PLATFORM_ESP32
-#define PICORUBY_NIMBLE_WRITE_MAX 512
-#define PICORUBY_BLE_READ_MIRROR_MAX 256
-/* VM only, non-reentrant, no concurrent consumer from peek to commit. The copy is the caller's native area. */
-typedef struct {
-  uint32_t queue_generation;
-  uint32_t slot_generation;
-  uint16_t ruby_handle;
-  int16_t slot;
-} picoruby_nimble_write_ticket_t;
-bool picoruby_nimble_ready(void);
-uint8_t picoruby_nimble_control_fault(void);
-void picoruby_nimble_reset_events(void);
-int picoruby_nimble_enqueue_write(uint16_t ruby_handle, const uint8_t *data, uint16_t len);
-bool picoruby_nimble_peek_write(uint16_t ruby_handle, uint8_t *copy, uint16_t *len,
-                               picoruby_nimble_write_ticket_t *ticket);
-bool picoruby_nimble_commit_write(const picoruby_nimble_write_ticket_t *ticket);
-void picoruby_nimble_attach_vm(void *vm);
-void picoruby_ble_publish_read_value(uint16_t ruby_handle, const uint8_t *data, uint16_t size);
-#endif
-
-static inline bool BLE_ready(void)
-{
-#ifdef PICORB_PLATFORM_ESP32
-  return picoruby_nimble_ready();
-#else
-  return true;
-#endif
-}
+bool BLE_ready(void);
+int BLE_control_fault(void);
+void BLE_vm_attached(void *vm);
+void BLE_events_cleared(void);
+void BLE_read_value_pushed(uint16_t att_handle, const uint8_t *data, uint16_t size);
 
 int BLE_init(const uint8_t *profile, size_t profile_len, int ble_role);
 enum BLE_power_control_result_t {

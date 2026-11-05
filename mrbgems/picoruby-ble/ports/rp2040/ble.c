@@ -255,3 +255,33 @@ BLE_write_characteristic_descriptor_using_descriptor_handle(uint16_t conn_handle
   return gatt_client_write_characteristic_descriptor_using_descriptor_handle(&packet_handler, conn_handle, descriptor_handle, size, (uint8_t *)data);
 }
 
+bool
+BLE_ready(void)
+{
+  return true;
+}
+
+int
+BLE_control_fault(void)
+{
+  return -1;
+}
+
+void
+BLE_vm_attached(void *vm)
+{
+  (void)vm;
+}
+
+void
+BLE_events_cleared(void)
+{
+}
+
+void
+BLE_read_value_pushed(uint16_t att_handle, const uint8_t *data, uint16_t size)
+{
+  (void)att_handle;
+  (void)data;
+  (void)size;
+}

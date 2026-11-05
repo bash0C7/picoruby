@@ -91,11 +91,9 @@ static int wrq_count = 0;
 static int wrq_cccd_reserved = 0;
 static int wrq_cccd_queued = 0;
 static uint32_t wrq_generation = 0;
-/* Invalidated by reset; only the next VM peek sets it again. An old ticket is not revived even when the generation wraps. */
-static bool wrq_snapshot_valid = false;
-static int wrq_snapshot_slot = -1;
 static uint32_t wrq_dropped = 0;
 static bool wrq_drop_logged = false;
+static bool wrq_deliver_failed_logged = false;
 static portMUX_TYPE wrq_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static bool started = false;
@@ -276,8 +274,6 @@ void
 picoruby_nimble_reset_writes(void)
 {
   taskENTER_CRITICAL(&wrq_mux);
-  wrq_snapshot_valid = false;
-  wrq_snapshot_slot = -1;
   wrq_generation++;
   wrq_head = wrq_tail = -1;
   wrq_count = 0;
@@ -285,59 +281,6 @@ picoruby_nimble_reset_writes(void)
   for (int i = 0; i < WRQ_DEPTH; i++) wrq[i].occupied = false;
   wrq_drop_logged = false;
   taskEXIT_CRITICAL(&wrq_mux);
-}
-
-bool
-picoruby_nimble_peek_write(uint16_t ruby_handle, uint8_t *copy, uint16_t *len,
-                          picoruby_nimble_write_ticket_t *ticket)
-{
-  taskENTER_CRITICAL(&wrq_mux);
-  wrq_snapshot_valid = false;
-  wrq_snapshot_slot = -1;
-  for (int slot = wrq_head; slot >= 0; slot = wrq[slot].next) {
-    if (wrq[slot].ruby_handle != ruby_handle) continue;
-    *len = wrq[slot].len;
-    memcpy(copy, wrq[slot].data, *len);
-    *ticket = (picoruby_nimble_write_ticket_t){
-      .queue_generation = wrq_generation,
-      .slot_generation = wrq[slot].generation,
-      .ruby_handle = ruby_handle,
-      .slot = slot,
-    };
-    wrq_snapshot_slot = slot;
-    wrq_snapshot_valid = true;
-    taskEXIT_CRITICAL(&wrq_mux);
-    return true;
-  }
-  taskEXIT_CRITICAL(&wrq_mux);
-  return false;
-}
-
-bool
-picoruby_nimble_commit_write(const picoruby_nimble_write_ticket_t *ticket)
-{
-  taskENTER_CRITICAL(&wrq_mux);
-  int slot = ticket->slot;
-  bool valid = wrq_snapshot_valid && slot >= 0 && slot < WRQ_DEPTH &&
-               wrq_snapshot_slot == slot && ticket->queue_generation == wrq_generation &&
-               wrq[slot].occupied && ticket->slot_generation == wrq[slot].generation &&
-               ticket->ruby_handle == wrq[slot].ruby_handle;
-  wrq_snapshot_valid = false;
-  wrq_snapshot_slot = -1;
-  if (!valid) {
-    taskEXIT_CRITICAL(&wrq_mux);
-    return false;
-  }
-  int prev = -1;
-  for (int i = wrq_head; i != slot; i = wrq[i].next) prev = i;
-  if (prev < 0) wrq_head = wrq[slot].next;
-  else wrq[prev].next = wrq[slot].next;
-  if (wrq_tail == slot) wrq_tail = prev;
-  wrq[slot].occupied = false;
-  wrq_count--;
-  if (wrq[slot].cccd) wrq_cccd_queued--;
-  taskEXIT_CRITICAL(&wrq_mux);
-  return true;
 }
 
 static void
@@ -363,6 +306,50 @@ drain_events(void)
       evq_count--;
     }
     taskEXIT_CRITICAL(&evq_mux);
+  }
+}
+
+static void
+drain_writes(void)
+{
+  static uint8_t buf[WRQ_PKT_MAX];
+  for (;;) {
+    uint16_t handle;
+    uint16_t len;
+    uint32_t slot_generation;
+    uint32_t ring_generation;
+    int slot;
+    taskENTER_CRITICAL(&wrq_mux);
+    if (wrq_head < 0) {
+      taskEXIT_CRITICAL(&wrq_mux);
+      return;
+    }
+    slot = wrq_head;
+    handle = wrq[slot].ruby_handle;
+    len = wrq[slot].len;
+    memcpy(buf, wrq[slot].data, len);
+    slot_generation = wrq[slot].generation;
+    ring_generation = wrq_generation;
+    taskEXIT_CRITICAL(&wrq_mux);
+    if (BLE_write_data(handle, buf, len) != 0) {
+      if (!wrq_deliver_failed_logged) {
+        wrq_deliver_failed_logged = true;
+        ESP_LOGW(TAG, "write delivery to the VM failed: handle=%u len=%u",
+                 (unsigned)handle, (unsigned)len);
+      }
+      return;
+    }
+    wrq_deliver_failed_logged = false;
+    taskENTER_CRITICAL(&wrq_mux);
+    if (wrq_generation == ring_generation && wrq_head == slot && wrq[slot].occupied &&
+        wrq[slot].generation == slot_generation) {
+      wrq_head = wrq[slot].next;
+      if (wrq_head < 0) wrq_tail = -1;
+      wrq[slot].occupied = false;
+      wrq_count--;
+      if (wrq[slot].cccd) wrq_cccd_queued--;
+    }
+    taskEXIT_CRITICAL(&wrq_mux);
   }
 }
 
@@ -409,6 +396,7 @@ picoruby_nimble_pump(void)
     heartbeat_pending = true;
     taskEXIT_CRITICAL(&owner_state_mux);
   }
+  drain_writes();
 }
 
 void
@@ -648,7 +636,6 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
     }
     return finish_start(-1);
   }
-  picoruby_nimble_attach_vm(NULL);
   picoruby_nimble_reset_events();
   picoruby_nimble_reset_writes();
 

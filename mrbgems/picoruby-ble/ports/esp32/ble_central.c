@@ -50,6 +50,15 @@ scan_start(void)
                &scan_params, picoruby_ble_gap_event, NULL);
 }
 
+static void
+scan_restart(void)
+{
+  int rc = scan_start();
+  if (rc != 0 && !(rc == BLE_HS_EALREADY && ble_gap_disc_active())) {
+    ESP_LOGW(BLE_TAG, "scan restart failed: %d", rc);
+  }
+}
+
 int
 BLE_central_start_scan(void)
 {
@@ -61,7 +70,9 @@ BLE_central_start_scan(void)
   }
   if (rc == 0) scan_wanted = true;
   picoruby_ble_connection_gate_exit();
-  return rc;
+  if (rc == 0) return 0;
+  ESP_LOGW(BLE_TAG, "scan start failed: %d", rc);
+  return -1;
 }
 
 int
@@ -71,7 +82,9 @@ BLE_central_stop_scan(void)
   scan_wanted = false;
   int rc = ble_gap_disc_cancel();
   picoruby_ble_connection_gate_exit();
-  return rc == BLE_HS_EALREADY ? 0 : rc;
+  if (rc == 0 || rc == BLE_HS_EALREADY) return 0;
+  ESP_LOGW(BLE_TAG, "scan stop failed: %d", rc);
+  return -1;
 }
 
 void
@@ -92,7 +105,7 @@ picoruby_ble_central_resume_after_connect(void)
 {
   if (!scan_wanted || !picoruby_ble_power_working() || picoruby_ble_connection_connect_pending()) return;
   if (ble_gap_disc_active()) return;
-  scan_start();
+  scan_restart();
 }
 
 void
@@ -100,7 +113,7 @@ picoruby_ble_central_resume_scan(void)
 {
   if (!scan_wanted || picoruby_ble_connection_connect_pending()) return;
   ble_gap_disc_cancel();
-  scan_start();
+  scan_restart();
 }
 
 uint8_t
