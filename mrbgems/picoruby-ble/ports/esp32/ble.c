@@ -1009,8 +1009,10 @@ synth_advertising_report(const struct ble_gap_disc_desc *d)
 static int
 central_mtu_cb(uint16_t conn, const struct ble_gatt_error *error, uint16_t mtu, void *arg)
 {
-  (void)error;
   (void)mtu;
+  if (error != NULL && error->status != 0) {
+    ESP_LOGW(BLE_TAG, "MTU exchange failed: conn=%u status=%u", (unsigned)conn, (unsigned)error->status);
+  }
   if (central_connect_token != 0 && (uintptr_t)arg == central_connect_token &&
       picoruby_ble_connection_matches(conn)) {
     central_connect_token = 0;
@@ -1145,6 +1147,10 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       break;
     }
     case BLE_GAP_EVENT_ENC_CHANGE:
+      if (event->enc_change.status != 0) {
+        ESP_LOGW(BLE_TAG, "encryption change failed: conn=%u status=%d",
+                 (unsigned)event->enc_change.conn_handle, event->enc_change.status);
+      }
       peripheral_adopt(event->enc_change.conn_handle);
       if (picoruby_ble_connection_matches(event->enc_change.conn_handle)) {
         conn_sc = false;
