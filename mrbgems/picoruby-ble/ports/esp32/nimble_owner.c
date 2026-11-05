@@ -118,6 +118,9 @@ picoruby_nimble_cancel_control(uint8_t reason)
   taskENTER_CRITICAL(&evq_mux);
   control_fault |= reason;
   taskEXIT_CRITICAL(&evq_mux);
+  taskENTER_CRITICAL(&owner_state_mux);
+  heartbeat_pending = true;
+  taskEXIT_CRITICAL(&owner_state_mux);
 }
 
 uint8_t
@@ -453,6 +456,7 @@ static void
 on_reset(int reason)
 {
   picoruby_ble_connection_close();
+  picoruby_ble_known_links_clear();
   taskENTER_CRITICAL(&owner_state_mux);
   synced = false;
   taskEXIT_CRITICAL(&owner_state_mux);

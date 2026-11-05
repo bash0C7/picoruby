@@ -113,7 +113,10 @@ picoruby_ble_central_resume_scan(void)
 uint8_t
 BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
 {
-  if (!picoruby_ble_connection_gate_enter()) return ERROR_CODE_COMMAND_DISALLOWED;
+  if (!picoruby_ble_connection_gate_enter()) {
+    ESP_LOGW(BLE_TAG, "connect rejected: connection gate unavailable");
+    return ERROR_CODE_COMMAND_DISALLOWED;
+  }
   ble_addr_t peer;
   peer.type = addr_type;
   for (int i = 0; i < 6; i++) peer.val[i] = addr[5 - i];
@@ -127,6 +130,9 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
         ble_gap_conn_find_by_addr(&peer, NULL) == BLE_HS_ENOTCONN) {
       status = BTSTACK_MEMORY_ALLOC_FAILED;
     }
+    ESP_LOGW(BLE_TAG, "connect rejected: status=0x%02x ready=%d pending=%d held=0x%04x deferred=%d",
+             (unsigned)status, (int)picoruby_nimble_ready(), (int)picoruby_ble_connection_connect_pending(),
+             (unsigned)picoruby_ble_connection_handle_snapshot(), (int)deferred);
     picoruby_ble_connection_gate_exit();
     return status;
   }

@@ -264,7 +264,7 @@ BLE_ready(void)
 int
 BLE_control_fault(void)
 {
-  return -1;
+  return 0;
 }
 
 void

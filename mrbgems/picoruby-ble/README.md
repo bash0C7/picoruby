@@ -96,7 +96,7 @@ MyScanner.new.scan(scan_type: :passive, timeout_ms: 10000)
 - `packet_callback(event_packet)` - Override to handle BTstack events
 - `heartbeat_callback()` - Override; called about once a second while the loop runs
 - `gap_local_bd_addr()` - Get local Bluetooth address
-- `hci_power_control(power_mode)` - Control HCI power state: `HCI_POWER_OFF`, `HCI_POWER_ON`, or `HCI_POWER_SLEEP`. Returns `0` when accepted; invalid modes raise `ArgumentError`, and native failures raise `RuntimeError`. ESP32 does not support SLEEP and raises `RuntimeError` without powering off.
+- `hci_power_control(power_mode)` - Control HCI power state: `HCI_POWER_OFF`, `HCI_POWER_ON`, or `HCI_POWER_SLEEP`. Returns `0` when accepted; invalid modes raise `ArgumentError`, and native failures raise `RuntimeError`.
 
 ### Peripheral Methods
 

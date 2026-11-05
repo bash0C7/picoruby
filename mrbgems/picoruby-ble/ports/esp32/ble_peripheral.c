@@ -389,7 +389,14 @@ BLE_peripheral_notify(uint16_t att_handle)
   if (BLE_read_data(&read_value) < 0) return -1;
   if (read_value.size == 0) return -1;
   uint16_t nimble_handle = picoruby_ble_handle_r2n(att_handle);
-  if (nimble_handle == 0 || !picoruby_ble_connection_gate_enter()) return -1;
+  if (nimble_handle == 0) {
+    ESP_LOGW(BLE_TAG, "notify rejected: unmapped handle=%u", (unsigned)att_handle);
+    return -1;
+  }
+  if (!picoruby_ble_connection_gate_enter()) {
+    ESP_LOGW(BLE_TAG, "notify rejected: connection gate unavailable: handle=%u", (unsigned)att_handle);
+    return -1;
+  }
   uint16_t handle = picoruby_ble_connection_handle_snapshot();
   if (!picoruby_ble_connection_matches(handle)) {
     picoruby_ble_connection_gate_exit();

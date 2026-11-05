@@ -371,12 +371,7 @@ c_control_fault(mrbc_vm *vm, mrbc_value *v, int argc)
     mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
     return;
   }
-  int fault = BLE_control_fault();
-  if (fault < 0) {
-    SET_NIL_RETURN();
-  } else {
-    SET_INT_RETURN(fault);
-  }
+  SET_INT_RETURN(BLE_control_fault());
 }
 
 static void
@@ -412,10 +407,6 @@ c_hci_power_control(mrbc_vm *vm, mrbc_value *v, int argc)
     return;
   }
   int result = BLE_hci_power_control((uint8_t)power_mode);
-  if (result == BLE_POWER_CONTROL_UNSUPPORTED) {
-    mrbc_raise(vm, MRBC_CLASS(RuntimeError), "BLE power mode is unsupported");
-    return;
-  }
   if (result != 0) {
     mrbc_raise(vm, MRBC_CLASS(RuntimeError), "BLE power control failed");
     return;

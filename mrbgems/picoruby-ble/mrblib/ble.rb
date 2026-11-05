@@ -16,8 +16,6 @@ class BLE
   HCI_POWER_ON = 1
   HCI_POWER_SLEEP = 2
 
-  EVENT_POLL_INTERVAL_MS = 100
-
   # GATT Characteristic Properties
   BROADCAST =                   0x01
   READ =                        0x02
@@ -132,7 +130,6 @@ class BLE
     event_queue = @event_queue
     _check_control_fault
     raise 'BLE init failed' unless @ble_initialized && _native_ready
-    poll_interval_ms = _control_fault ? EVENT_POLL_INTERVAL_MS : nil
     if timeout_ms
       debug_puts "Starting for #{timeout_ms} ms"
     else
@@ -153,16 +150,14 @@ class BLE
         puts "Stopped by state: #{stop_state}"
         break
       end
-      wait_ms = timeout_ms ? timeout_ms - total_timeout_ms : poll_interval_ms
-      if poll_interval_ms && poll_interval_ms < wait_ms
-        wait_ms = poll_interval_ms
-      end
+      wait_ms = timeout_ms ? timeout_ms - total_timeout_ms : nil
       event = event_queue.pop(timeout_ms: wait_ms)
       _check_registration(event_queue)
       _event_popped if event
       if event.is_a?(String)
         packet_callback(event)
       elsif event
+        _check_control_fault
         heartbeat_callback
       end
       _check_registration(event_queue)
@@ -185,7 +180,7 @@ class BLE
 
   def _check_control_fault
     reason = _control_fault
-    return if reason.nil? || reason == 0
+    return if reason == 0
     raise "BLE session cancelled (control fault #{reason}); initialize BLE again"
   end
 end

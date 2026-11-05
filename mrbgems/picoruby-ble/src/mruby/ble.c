@@ -330,8 +330,7 @@ mrb_control_fault(mrb_state *mrb, mrb_value self)
 {
   mrb_ble_check_active_owner(mrb, self);
   mrb_get_args(mrb, "");
-  int fault = BLE_control_fault();
-  return fault < 0 ? mrb_nil_value() : mrb_int_value(mrb, fault);
+  return mrb_int_value(mrb, BLE_control_fault());
 }
 
 static mrb_value
@@ -352,9 +351,6 @@ mrb_hci_power_control(mrb_state *mrb, mrb_value self)
   }
   if (power_mode != 0 && !BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
   int result = BLE_hci_power_control((uint8_t)power_mode);
-  if (result == BLE_POWER_CONTROL_UNSUPPORTED) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "BLE power mode is unsupported");
-  }
   if (result != 0) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE power control failed");
   return mrb_int_value(mrb, 0);
 }

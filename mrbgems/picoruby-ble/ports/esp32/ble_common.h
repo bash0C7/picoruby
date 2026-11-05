@@ -43,6 +43,7 @@ uint16_t picoruby_ble_connection_handle_snapshot(void);
 void picoruby_ble_central_reset_request(void);
 int picoruby_ble_att_payload_status(uint16_t handle, uint16_t size);
 uint8_t picoruby_ble_request_status(int rc);
+void picoruby_ble_known_links_clear(void);
 
 #define EVT_ATT_CAN_SEND_NOW 0xB7
 

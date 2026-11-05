@@ -223,13 +223,59 @@ terminating_remove(uint16_t handle)
   return false;
 }
 
+static uint16_t known_link[MYNEWT_VAL(BLE_MAX_CONNECTIONS)];
+static int known_link_count;
+
+static void
+known_link_add(uint16_t handle)
+{
+  for (int i = 0; i < known_link_count; i++) {
+    if (known_link[i] == handle) return;
+  }
+  if (known_link_count >= MYNEWT_VAL(BLE_MAX_CONNECTIONS)) {
+    ESP_LOGW(BLE_TAG, "link table full: handle=%u", (unsigned)handle);
+    return;
+  }
+  known_link[known_link_count++] = handle;
+}
+
+static void
+known_link_remove(uint16_t handle)
+{
+  for (int i = 0; i < known_link_count; i++) {
+    if (known_link[i] != handle) continue;
+    known_link[i] = known_link[--known_link_count];
+    return;
+  }
+}
+
+void
+picoruby_ble_known_links_clear(void)
+{
+  if (!picoruby_ble_connection_gate_enter()) return;
+  known_link_count = 0;
+  picoruby_ble_connection_gate_exit();
+}
+
 static void
 peripheral_adopt(uint16_t handle)
 {
   if (role != BLE_ROLE_PERIPHERAL || handle == 0xffff || terminating_has(handle)) return;
   if (picoruby_ble_connection_handle_snapshot() != 0xffff) return;
   if (ble_gap_conn_find(handle, NULL) != 0) return;
+  if (power_state == HCI_STATE_OFF || power_state == HCI_STATE_SLEEPING) {
+    int rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+    if (rc == 0 || rc == BLE_HS_EALREADY) {
+      terminating_discard(handle);
+      known_link_add(handle);
+    } else if (rc != BLE_HS_ENOTCONN) {
+      ESP_LOGE(BLE_TAG, "late connection termination failed: %d", rc);
+      picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
+    }
+    return;
+  }
   if (!picoruby_ble_connection_claim(handle)) return;
+  known_link_add(handle);
   conn_sc = false;
   picoruby_ble_central_reset_request();
 }
@@ -285,7 +331,10 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
         }
       }
       if (data == NULL || len == 0) return 0;
-      return os_mbuf_append(ctxt->om, data, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+      if (os_mbuf_append(ctxt->om, data, len) == 0) return 0;
+      ESP_LOGW(BLE_TAG, "read response append failed: handle=%u len=%u",
+               (unsigned)e->ruby_handle, (unsigned)len);
+      return BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
     case BLE_GATT_ACCESS_OP_WRITE_DSC: {
@@ -977,6 +1026,12 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
   if (!picoruby_ble_connection_gate_enter()) return 0;
   switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
+      if (event->connect.status == BLE_HS_EAGAIN) {
+        known_link_remove(event->connect.conn_handle);
+      } else if (event->connect.conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+                 ble_gap_conn_find(event->connect.conn_handle, NULL) == 0) {
+        known_link_add(event->connect.conn_handle);
+      }
       if (role == BLE_ROLE_PERIPHERAL && picoruby_ble_connection_matches(event->connect.conn_handle)) {
         if (event->connect.status == BLE_HS_EAGAIN ||
             ble_gap_conn_find(event->connect.conn_handle, NULL) != 0) {
@@ -992,13 +1047,14 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       if (event->connect.status == 0 ||
           (role == BLE_ROLE_PERIPHERAL && event->connect.status != BLE_HS_EAGAIN &&
            ble_gap_conn_find(event->connect.conn_handle, NULL) == 0)) {
-        if (!picoruby_ble_connection_claim(event->connect.conn_handle)) {
+        if (power_state != HCI_STATE_WORKING || terminating_has(event->connect.conn_handle) ||
+            !picoruby_ble_connection_claim(event->connect.conn_handle)) {
           int rc = ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-          if (rc != 0) {
+          if (rc == 0 || rc == BLE_HS_EALREADY) {
+            terminating_add(event->connect.conn_handle);
+          } else if (rc != BLE_HS_ENOTCONN) {
             ESP_LOGE(BLE_TAG, "extra connection termination failed: %d", rc);
             picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
-          } else {
-            terminating_add(event->connect.conn_handle);
           }
           break;
         }
@@ -1040,6 +1096,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       }
       break;
     case BLE_GAP_EVENT_DISCONNECT:
+      known_link_remove(event->disconnect.conn.conn_handle);
       terminating_remove(event->disconnect.conn.conn_handle);
       if (!picoruby_ble_connection_release(event->disconnect.conn.conn_handle)) {
         if (role == BLE_ROLE_CENTRAL && picoruby_ble_central_connect_lost(&event->disconnect.conn)) {
@@ -1147,31 +1204,18 @@ power_set_heartbeat(bool on)
   picoruby_nimble_heartbeat_enable(on);
 }
 
-void ble_gap_conn_foreach_handle(ble_gap_conn_foreach_handle_fn *cb, void *arg);
-void ble_hs_lock_nested(void);
-void ble_hs_unlock_nested(void);
-
 typedef struct {
   uint16_t handle[MYNEWT_VAL(BLE_MAX_CONNECTIONS)];
   int count;
 } known_links_t;
-
-static int
-collect_known_link(uint16_t handle, void *arg)
-{
-  known_links_t *links = arg;
-  if (links->count < MYNEWT_VAL(BLE_MAX_CONNECTIONS)) links->handle[links->count++] = handle;
-  return 0;
-}
 
 static void
 list_known_links(known_links_t *links)
 {
   links->count = 0;
   if (!ble_hs_is_enabled()) return;
-  ble_hs_lock_nested();
-  ble_gap_conn_foreach_handle(collect_known_link, links);
-  ble_hs_unlock_nested();
+  links->count = known_link_count;
+  memcpy(links->handle, known_link, sizeof(known_link));
 }
 
 static int
@@ -1198,6 +1242,7 @@ power_terminate_connection(void)
   for (int i = 0; i < links.count; i++) {
     int rc = ble_gap_terminate(links.handle[i], BLE_ERR_REM_USER_CONN_TERM);
     if (rc == 0 || rc == BLE_HS_EALREADY) terminating_add(links.handle[i]);
+    if (rc == BLE_HS_ENOTCONN) known_link_remove(links.handle[i]);
     if (rc == 0 || rc == BLE_HS_EALREADY || rc == BLE_HS_ENOTCONN) continue;
     if (picoruby_nimble_control_fault() & PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST) continue;
     ESP_LOGE(BLE_TAG, "connection termination failed: %d", rc);
@@ -1296,6 +1341,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   power_on_requested = false;
   picoruby_ble_connection_close();
   terminating_count = 0;
+  known_link_count = 0;
   central_connect_token = 0;
   have_services = false;
   attr_map_count = 0;

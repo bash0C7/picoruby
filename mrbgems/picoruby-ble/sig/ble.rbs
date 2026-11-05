@@ -11,8 +11,6 @@ class BLE
   HCI_POWER_ON: Integer
   HCI_POWER_SLEEP: Integer
 
-  EVENT_POLL_INTERVAL_MS: Integer
-
   CLIENT_CHARACTERISTIC_CONFIGURATION: Integer
   CHARACTERISTIC_DATABASE_HASH: Integer
 
@@ -80,7 +78,7 @@ class BLE
   def ensure: () ?{ () -> void } -> (Proc | nil)
   private def _init: (String | nil) -> void
   private def _native_ready: () -> bool
-  private def _control_fault: () -> (Integer | nil)
+  private def _control_fault: () -> Integer
   private def _check_control_fault: () -> nil
   private def _event_popped: () -> nil
   private def _event_queue_cleared: (?Task::Queue expected_queue) -> nil
