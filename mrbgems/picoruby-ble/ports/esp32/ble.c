@@ -20,6 +20,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 static const char *BLE_TAG = "prb_ble_evq";
 
@@ -89,7 +90,7 @@ static uint8_t central_connect_event[21];
 static uintptr_t central_connect_token;
 static uintptr_t central_connect_serial;
 
-static uint8_t  rdm_buf[RDM_SLOTS][RDM_MAX];
+static uint8_t *rdm_pool = NULL;
 static uint16_t rdm_len[RDM_SLOTS];
 static bool     rdm_valid[RDM_SLOTS];
 static bool     rdm_oversize[RDM_SLOTS];
@@ -319,7 +320,7 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
         n = rdm_len[e->mirror_slot];
         valid = rdm_valid[e->mirror_slot];
         oversize = rdm_oversize[e->mirror_slot];
-        if (n > 0) memcpy(rd_tmp, rdm_buf[e->mirror_slot], n);
+        if (n > 0) memcpy(rd_tmp, rdm_pool + (size_t)e->mirror_slot * RDM_MAX, n);
         taskEXIT_CRITICAL(&rdm_mux);
         if (oversize) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         if (valid) {
@@ -371,7 +372,7 @@ mirror_store(int slot, uint16_t ruby_handle, const uint8_t *data, uint16_t size)
 {
   bool oversize = size > RDM_MAX;
   taskENTER_CRITICAL(&rdm_mux);
-  if (!oversize && size > 0) memcpy(rdm_buf[slot], data, size);
+  if (!oversize && size > 0) memcpy(rdm_pool + (size_t)slot * RDM_MAX, data, size);
   rdm_len[slot] = oversize ? 0 : size;
   rdm_valid[slot] = true;
   bool newly_oversize = oversize && !rdm_oversize[slot];
@@ -1347,6 +1348,8 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   have_services = false;
   attr_map_count = 0;
   rdm_used = 0;
+  heap_caps_free(rdm_pool);
+  rdm_pool = NULL;
 
   free(owned_profile_data);
   owned_profile_data = replacement;
@@ -1368,8 +1371,22 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   int rc = picoruby_nimble_start(register_services);
   if (rc != 0) {
     ESP_LOGE(BLE_TAG, "NimBLE start failed: %d", rc);
+    attr_map_count = rdm_used = 0;
+    have_services = false;
+    return rc;
   }
-  return rc;
+  if (rdm_used > 0) {
+    size_t pool_bytes = (size_t)rdm_used * RDM_MAX;
+    rdm_pool = heap_caps_malloc(pool_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (rdm_pool == NULL) {
+      ESP_LOGE(BLE_TAG, "read mirror pool allocation failed: %u bytes", (unsigned)pool_bytes);
+      if (picoruby_nimble_stop() != 0) ESP_LOGE(BLE_TAG, "NimBLE stop failed");
+      attr_map_count = rdm_used = 0;
+      have_services = false;
+      return -1;
+    }
+  }
+  return 0;
 }
 
 static void
