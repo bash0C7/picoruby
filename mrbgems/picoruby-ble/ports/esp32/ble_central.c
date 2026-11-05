@@ -25,7 +25,7 @@ static struct ble_gap_disc_params scan_params = {
   .passive = 1,
 };
 
-void
+int
 BLE_central_set_scan_params(uint8_t scan_type, uint16_t scan_interval, uint16_t scan_window, uint8_t scanning_filter_policy)
 {
   scan_params.itvl = scan_interval;
@@ -33,6 +33,7 @@ BLE_central_set_scan_params(uint8_t scan_type, uint16_t scan_interval, uint16_t 
   scan_params.passive = (scan_type == 0);
   scan_params.filter_policy = scanning_filter_policy;
   scan_params.filter_duplicates = 0;
+  return 0;
 }
 
 static bool scan_wanted;

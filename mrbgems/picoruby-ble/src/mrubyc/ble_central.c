@@ -208,7 +208,10 @@ c_set_scan_params(mrbc_vm *vm, mrbc_value *v, int argc)
     return;
   }
   uint8_t scanning_filter_policy = 0; // TODO 1: all from whitelist
-  BLE_central_set_scan_params(scan_type, (uint16_t)GET_INT_ARG(2), (uint16_t)GET_INT_ARG(3), scanning_filter_policy);
+  if (BLE_central_set_scan_params(scan_type, (uint16_t)GET_INT_ARG(2), (uint16_t)GET_INT_ARG(3), scanning_filter_policy) != 0) {
+    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "scan_type active is not implemented");
+    return;
+  }
   SET_INT_RETURN(0);
 }
 

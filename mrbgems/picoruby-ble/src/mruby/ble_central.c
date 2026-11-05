@@ -142,7 +142,9 @@ mrb_set_scan_params(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_ARGUMENT_ERROR, "wrong type of scan_type");
   }
   uint8_t scanning_filter_policy = 0; // TODO 1: all from whitelist
-  BLE_central_set_scan_params(scan_type_num, (uint16_t)scan_interval, (uint16_t)scan_window, scanning_filter_policy);
+  if (BLE_central_set_scan_params(scan_type_num, (uint16_t)scan_interval, (uint16_t)scan_window, scanning_filter_policy) != 0) {
+    mrb_notimplement(mrb);
+  }
   return mrb_int_value(mrb, 0);
 }
 

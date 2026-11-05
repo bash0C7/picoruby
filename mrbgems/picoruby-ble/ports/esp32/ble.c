@@ -1299,6 +1299,7 @@ void
 picoruby_ble_reconcile_connections(void)
 {
   if (role == BLE_ROLE_CENTRAL && picoruby_ble_central_reconcile_connect()) {
+    ESP_LOGW(BLE_TAG, "connection lost: pending connect ended without a CONNECT event");
     synth_le_connection_complete(0, status_to_u8(BLE_HS_ENOTCONN));
     picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
     picoruby_ble_central_resume_after_connect();
@@ -1574,13 +1575,20 @@ att_status(int status)
 }
 
 uint8_t
-picoruby_ble_request_status(int rc)
+picoruby_ble_status_code(int rc)
 {
   if (rc == 0) return 0;
   if (rc == BLE_HS_ENOTCONN) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
   if (rc == BLE_HS_ENOMEM) return ERROR_CODE_MEMORY_CAPACITY_EXCEEDED;
-  ESP_LOGW(BLE_TAG, "BLE request failed: %d", rc);
   return ERROR_CODE_UNSPECIFIED_ERROR;
+}
+
+uint8_t
+picoruby_ble_request_status(int rc)
+{
+  uint8_t status = picoruby_ble_status_code(rc);
+  if (status == ERROR_CODE_UNSPECIFIED_ERROR) ESP_LOGW(BLE_TAG, "BLE request failed: %d", rc);
+  return status;
 }
 
 static int

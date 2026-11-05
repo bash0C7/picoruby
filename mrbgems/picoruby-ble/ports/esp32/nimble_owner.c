@@ -439,8 +439,12 @@ on_sync(void)
   taskEXIT_CRITICAL(&owner_state_mux);
   if (!allow_sync) return;
   int rc = ble_hs_util_ensure_addr(0);
+  if (rc != 0) ESP_LOGE(TAG, "ble_hs_util_ensure_addr failed: %d", rc);
   uint8_t addr_type = BLE_OWN_ADDR_PUBLIC;
-  if (rc == 0) rc = ble_hs_id_infer_auto(0, &addr_type);
+  if (rc == 0) {
+    rc = ble_hs_id_infer_auto(0, &addr_type);
+    if (rc != 0) ESP_LOGE(TAG, "ble_hs_id_infer_auto failed: %d", rc);
+  }
   taskENTER_CRITICAL(&owner_state_mux);
   bool give_sync = !cleanup_blocked && !host_stop_pending && (!lifecycle_busy || !started);
   if (give_sync) {
@@ -506,14 +510,22 @@ ensure_timers(void)
       .callback = heartbeat_timer_cb,
       .name = "prb_ble_hb",
     };
-    if (esp_timer_create(&hargs, &heartbeat_timer) != ESP_OK) return -1;
+    esp_err_t err = esp_timer_create(&hargs, &heartbeat_timer);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "heartbeat timer creation failed: %d", err);
+      return -1;
+    }
   }
   if (halting_timer == NULL) {
     const esp_timer_create_args_t wargs = {
       .callback = halting_timer_cb,
       .name = "prb_ble_halt",
     };
-    if (esp_timer_create(&wargs, &halting_timer) != ESP_OK) return -1;
+    esp_err_t err = esp_timer_create(&wargs, &halting_timer);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "halting timer creation failed: %d", err);
+      return -1;
+    }
   }
   return 0;
 }
@@ -585,8 +597,13 @@ int
 picoruby_nimble_start(picoruby_nimble_setup_fn setup)
 {
   taskENTER_CRITICAL(&owner_state_mux);
-  if (cleanup_blocked || lifecycle_busy || host_stop_pending) {
+  bool blocked = cleanup_blocked;
+  bool busy = lifecycle_busy;
+  bool stopping = host_stop_pending;
+  if (blocked || busy || stopping) {
     taskEXIT_CRITICAL(&owner_state_mux);
+    ESP_LOGE(TAG, "NimBLE start refused: cleanup_blocked=%d lifecycle_busy=%d host_stop_pending=%d",
+             (int)blocked, (int)busy, (int)stopping);
     return -1;
   }
   if (started) {
@@ -595,14 +612,20 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   }
   lifecycle_busy = true;
   taskEXIT_CRITICAL(&owner_state_mux);
-  if (reserve_event_storage() != 0) return finish_start(-1);
-
-  esp_err_t err = nvs_flash_init();
-  if (err != ESP_OK) {
+  if (reserve_event_storage() != 0) {
+    ESP_LOGE(TAG, "event queue storage allocation failed");
     return finish_start(-1);
   }
 
-  if (nimble_port_init() != ESP_OK) {
+  esp_err_t err = nvs_flash_init();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "nvs_flash_init failed: %d", err);
+    return finish_start(-1);
+  }
+
+  esp_err_t port_err = nimble_port_init();
+  if (port_err != ESP_OK) {
+    ESP_LOGE(TAG, "nimble_port_init failed: %d", port_err);
     return finish_start(-1);
   }
 
@@ -618,7 +641,9 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
   ble_store_config_init();
 
-  if (setup && setup() != 0) {
+  int setup_rc = setup ? setup() : 0;
+  if (setup_rc != 0) {
+    ESP_LOGE(TAG, "GATT setup failed: %d", setup_rc);
     if (nimble_port_deinit() != ESP_OK) {
       esp_system_abort("NimBLE startup cleanup failed");
     }
@@ -636,6 +661,7 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
 
   if (sync_sem == NULL) sync_sem = xSemaphoreCreateBinary();
   if (sync_sem == NULL) {
+    ESP_LOGE(TAG, "sync semaphore allocation failed");
     if (nimble_port_deinit() != ESP_OK) {
       esp_system_abort("NimBLE startup cleanup failed");
     }
@@ -643,6 +669,7 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   }
   if (host_done_sem == NULL) host_done_sem = xSemaphoreCreateBinary();
   if (host_done_sem == NULL) {
+    ESP_LOGE(TAG, "host-done semaphore allocation failed");
     if (nimble_port_deinit() != ESP_OK) {
       esp_system_abort("NimBLE startup cleanup failed");
     }
@@ -661,6 +688,7 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   taskEXIT_CRITICAL(&evq_mux);
   if (xTaskCreatePinnedToCore(host_task, "nimble_host", NIMBLE_HS_STACK_SIZE,
                               NULL, (configMAX_PRIORITIES - 4), NULL, NIMBLE_CORE) != pdPASS) {
+    ESP_LOGE(TAG, "host task creation failed");
     ble_npl_event_deinit(&host_exit_event);
     host_exit_initialized = false;
     if (nimble_port_deinit() != ESP_OK) {
@@ -678,7 +706,8 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   if (!sync_ok) started = true;
   taskEXIT_CRITICAL(&owner_state_mux);
   if (!sync_ok) {
-    (void)stop_host(true, false);
+    int stop_rc = stop_host(true, false);
+    ESP_LOGE(TAG, "NimBLE did not sync; stop_host returned %d", stop_rc);
     return -1;
   }
 

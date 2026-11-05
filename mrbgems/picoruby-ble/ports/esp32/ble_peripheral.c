@@ -375,41 +375,64 @@ picoruby_ble_peripheral_resume_adv(void)
   picoruby_ble_connection_gate_exit();
 }
 
+static int notify_last_logged_rc;
+
+static void
+notify_log_failure(int key, uint16_t att_handle, const char *reason)
+{
+  if (key == notify_last_logged_rc) return;
+  notify_last_logged_rc = key;
+  ESP_LOGW(BLE_TAG, "notify failed: %s: handle=%u key=%d", reason, (unsigned)att_handle, key);
+}
+
 static int
 notify_status(int rc)
 {
   if (rc == BLE_HS_ENOMEM) return BTSTACK_ACL_BUFFERS_FULL;
-  return picoruby_ble_request_status(rc);
+  return picoruby_ble_status_code(rc);
 }
 
 int
 BLE_peripheral_notify(uint16_t att_handle)
 {
   BLE_read_value_t read_value = { .att_handle = att_handle, .data = NULL, .size = 0 };
-  if (BLE_read_data(&read_value) < 0) return -1;
-  if (read_value.size == 0) return -1;
+  if (BLE_read_data(&read_value) < 0) {
+    notify_log_failure(-1, att_handle, "no value");
+    return -1;
+  }
+  if (read_value.size == 0) {
+    notify_log_failure(-2, att_handle, "empty value");
+    return -1;
+  }
   uint16_t nimble_handle = picoruby_ble_handle_r2n(att_handle);
   if (nimble_handle == 0) {
-    ESP_LOGW(BLE_TAG, "notify rejected: unmapped handle=%u", (unsigned)att_handle);
+    notify_log_failure(-3, att_handle, "unmapped handle");
     return -1;
   }
   if (!picoruby_ble_connection_gate_enter()) {
-    ESP_LOGW(BLE_TAG, "notify rejected: connection gate unavailable: handle=%u", (unsigned)att_handle);
+    notify_log_failure(-4, att_handle, "connection gate unavailable");
     return -1;
   }
   uint16_t handle = picoruby_ble_connection_handle_snapshot();
   if (!picoruby_ble_connection_matches(handle)) {
     picoruby_ble_connection_gate_exit();
+    notify_log_failure(BLE_HS_ENOTCONN, att_handle, "not connected");
     return notify_status(BLE_HS_ENOTCONN);
   }
   int payload_rc = picoruby_ble_att_payload_status(handle, read_value.size);
   if (payload_rc != 0) {
     picoruby_ble_connection_gate_exit();
+    notify_log_failure(payload_rc, att_handle, "ATT payload check");
     return notify_status(payload_rc);
   }
   struct os_mbuf *om = ble_hs_mbuf_from_flat(read_value.data, read_value.size);
   int rc = om == NULL ? BLE_HS_ENOMEM : ble_gatts_notify_custom(handle, nimble_handle, om);
   picoruby_ble_connection_gate_exit();
+  if (rc == 0) {
+    notify_last_logged_rc = 0;
+    return 0;
+  }
+  notify_log_failure(rc, att_handle, "SDK notify");
   return notify_status(rc);
 }
 
