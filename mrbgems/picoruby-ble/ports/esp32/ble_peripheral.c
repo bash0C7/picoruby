@@ -16,11 +16,18 @@
 #include "host/ble_hs_mbuf.h"
 #include "nimble/ble.h"
 #include "os/os_mbuf.h"
+#include "os/os_mempool.h"
 
 #include "ble_common.h"
 #include "nimble_owner.h"
 
 #define BTSTACK_ACL_BUFFERS_FULL 0x57
+#define ATT_READ_RESERVE_BLOCKS 4
+#define NOTIFY_MAX_BLOCKS 3
+#define NOTIFY_RESERVE_KEY (-5)
+_Static_assert(CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE == 256, "reserve block counts assume 256-byte msys_1 blocks");
+_Static_assert(CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU <= 256, "NOTIFY_MAX_BLOCKS assumes an ATT MTU of at most 256");
+_Static_assert(CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT >= ATT_READ_RESERVE_BLOCKS + NOTIFY_MAX_BLOCKS, "msys_1 too small for the ATT response reserve");
 
 static const char *BLE_TAG = "prb_ble_peripheral";
 
@@ -167,9 +174,33 @@ picoruby_ble_connection_handle_snapshot(void)
   return handle;
 }
 
+static int
+msys1_free_blocks(void)
+{
+  static bool missing_logged;
+  struct os_mempool_info info;
+  struct os_mempool *mp = NULL;
+  while ((mp = os_mempool_info_get_next(mp, &info)) != NULL) {
+    if (strcmp(info.omi_name, "msys_1") == 0) return info.omi_num_free;
+  }
+  if (!missing_logged) {
+    missing_logged = true;
+    ESP_LOGW(BLE_TAG, "msys_1 pool not found; ATT response reserve disabled");
+  }
+  return -1;
+}
+
+static bool
+below_reserve(int needed)
+{
+  int free_blocks = msys1_free_blocks();
+  return free_blocks >= 0 && free_blocks < ATT_READ_RESERVE_BLOCKS + needed;
+}
+
 static struct os_mbuf *
 send_permit_probe(void)
 {
+  if (below_reserve(NOTIFY_MAX_BLOCKS)) return NULL;
   struct os_mbuf *header = ble_hs_mbuf_att_pkt();
   if (header == NULL) return NULL;
   uint8_t dummy = 0;
@@ -405,6 +436,12 @@ BLE_peripheral_notify(uint16_t att_handle)
     return notify_status(payload_rc);
   }
   struct os_mbuf *om = ble_hs_mbuf_from_flat(read_value.data, read_value.size);
+  if (om != NULL && below_reserve(1)) {
+    os_mbuf_free_chain(om);
+    picoruby_ble_connection_gate_exit();
+    notify_log_failure(NOTIFY_RESERVE_KEY, att_handle, "buffers kept for ATT responses");
+    return BTSTACK_ACL_BUFFERS_FULL;
+  }
   int rc = om == NULL ? BLE_HS_ENOMEM : ble_gatts_notify_custom(handle, nimble_handle, om);
   picoruby_ble_connection_gate_exit();
   if (rc == 0) {
