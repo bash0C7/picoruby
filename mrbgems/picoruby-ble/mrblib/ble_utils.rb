@@ -14,7 +14,6 @@ class BLE
         end
         str = int16_to_little_endian(value)
       when String
-        # Preserve optional separators, but consume the complete UUID input.
         str = "_" * 16
         i = 0
         j = 15

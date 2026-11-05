@@ -1,6 +1,5 @@
 require 'ble'
 
-# C3 (notification) only surfaces via packet_callback: ble_central.rb's GATT_EVENT_NOTIFICATION branch is an empty TODO.
 class CentralPathsProbe < BLE
   TARGET_NAME = "PBLE-DARWIN"
   SERVICE     = 0x181A
@@ -29,11 +28,9 @@ class CentralPathsProbe < BLE
            "handle=#{Utils.little_endian_to_int16(event_packet.byteslice(GATT_EVENT_PAYLOAD_OFFSET, 2))} count=#{@notify_seen}"
     end
     super
-    # drive also runs here so C1/C2 go out on the QUERY_COMPLETE that ends discovery.
     drive
   end
 
-  # Bluetooth Base UUID tail shared by every 16-bit UUID promoted to 128 bits.
   BT_BASE_SUFFIX = "\x00\x00\x10\x00\x80\x00\x00\x80\x5F\x9B\x34\xFB"
 
   def uuid128_for(uuid16)
@@ -43,11 +40,10 @@ class CentralPathsProbe < BLE
   def pick(list, uuid16)
     want = uuid128_for(uuid16)
     found = nil
-    list.each { |e| found = e if e[:uuid128] == want } # Array#find isn't in the base VM
+    list.each { |e| found = e if e[:uuid128] == want }
     found
   end
 
-  # :TC_IDLE only follows the last GATT_EVENT_QUERY_COMPLETE, so that's what makes @conn_handle/@services safe to read.
   def drive
     return if @wrote
     return if state != :TC_IDLE

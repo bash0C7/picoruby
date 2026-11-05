@@ -1,7 +1,7 @@
 require 'mbedtls'
 begin
   require 'cyw43'
-rescue LoadError # Only LoadError should be rescued
+rescue LoadError
 end
 
 class BLE
@@ -129,7 +129,6 @@ class BLE
 
   def start(timeout_ms = nil, stop_state = :no_stop)
     start_entered = false
-    # This existing Queue is also the identity of this initialization.
     event_queue = @event_queue
     _check_control_fault
     raise 'BLE init failed' unless @ble_initialized && _native_ready
@@ -159,7 +158,6 @@ class BLE
         wait_ms = poll_interval_ms
       end
       event = event_queue.pop(timeout_ms: wait_ms)
-      # pop yields; another task may have replaced the hardware owner.
       _check_registration(event_queue)
       _event_popped if event
       if event.is_a?(String)
@@ -167,14 +165,12 @@ class BLE
       elsif event
         heartbeat_callback
       end
-      # User callbacks may construct another BLE instance before returning.
       _check_registration(event_queue)
       _check_control_fault
     end
     total_timeout_ms = Machine.board_millis - started_at
     return total_timeout_ms
   ensure
-    # An old loop must never power off the replacement instance.
     _power_control_registration(event_queue, HCI_POWER_OFF) if start_entered
     @ensure_proc&.call
     debug_puts "Stopped"

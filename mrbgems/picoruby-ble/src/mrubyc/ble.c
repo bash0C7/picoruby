@@ -1,4 +1,3 @@
-/* Keep the identity alive: a raw pointer can be reused after refcount release. */
 static mrbc_value registered_ble = {.tt = MRBC_TT_NIL};
 static mrbc_value write_values = {.tt = MRBC_TT_NIL};
 static mrbc_value read_values = {.tt = MRBC_TT_NIL};
@@ -346,7 +345,6 @@ c__init(mrbc_vm *vm, mrbc_value *v, int argc)
   if (profile_buf) mrbc_raw_free(profile_buf);
   profile_buf = new_profile;
 
-  /* Native success is the ownership commit point. Failed init keeps the old owner. */
   mrbc_value prev_ble = registered_ble;
   registered_ble = new_ble;
   mrbc_value prev_event_queue = event_queue;

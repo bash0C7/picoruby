@@ -1,11 +1,10 @@
 require 'ble'
 
-# Short adv reports (data_length 0/1) must be padded to 14 bytes; see README.md.
 class AdvProbe < BLE
   GAP_ADV = 0xda
 
   def initialize
-    super(:central) # only :central reaches packet_callback
+    super(:central)
     @total = 0
     @d0 = 0
     @d1 = 0
@@ -39,7 +38,6 @@ class AdvProbe < BLE
   end
 
   def advertising_report_callback(adv_report)
-    # Parsed without raising; that is the whole assertion.
   end
 
   def heartbeat_callback
@@ -47,11 +45,10 @@ class AdvProbe < BLE
   end
 end
 
-# Negative control: an unpadded packet must raise, or this probe can't detect the bug.
-prefix = "\xda\x0a\x04\x00"      # evt, len=10, event_type=SCAN_RSP, addr_type
+prefix = "\xda\x0a\x04\x00"
 addr   = "\x11\x22\x33\x44\x55\x66"
-tail   = "\xc0\x00"              # rssi, data_length = 0
-unpadded = prefix + addr + tail  # 12 bytes
+tail   = "\xc0\x00"
+unpadded = prefix + addr + tail
 begin
   BLE::AdvertisingReport.new(unpadded)
   puts "[probe] NEGCTL bytes=#{unpadded.bytesize} raised=no  <-- probe is BLIND"

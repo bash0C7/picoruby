@@ -87,25 +87,18 @@ class BLE
   private def _check_registration: (Task::Queue expected_queue) -> nil
   private def _power_control_registration: (Task::Queue expected_queue, Integer power_mode) -> bool
   def debug_puts: (*untyped) -> nil
-  # 0=OFF, 1=ON, 2=SLEEP. ESP32 rejects SLEEP with RuntimeError.
-  # Returns 0 after native acceptance; invalid modes raise ArgumentError,
-  # and native failures raise RuntimeError.
   def hci_power_control: (Integer power_mode) -> 0
   def start: (?(Integer | nil) timeout_ms, ?(Symbol | nil)) -> Integer
   def packet_callback: (String) -> void
   def heartbeat_callback: () -> void
   def blink_led: () -> void
   def gap_local_bd_addr: () -> String
-  # ATT handles are 1..0xffff; pop returns nil for an invalid handle.
   def pop_write_value: (Integer handle) -> (String|nil)
-  # Values must fit 65535 bytes; ESP32 also enforces its read mirror capacity.
   def push_read_value: (Integer handle, String value) -> String
-  # addr is exactly 6 bytes; addr_type is 0..3.
   def gap_connect: (String addr, Integer addr_type) -> Integer
 
   class Utils
     def self.bd_addr_to_str: (String) -> String
-    # Integer UUIDs are 0..0xffff; String UUIDs must contain exactly 16 hex pairs.
     def self.uuid: (Integer | String) -> String
     def self.reverse_128: (String|nil) -> String
     def self.uuid128_to_uuid32: (String) -> (Integer|nil)
@@ -163,7 +156,6 @@ class BLE
 
   # class Peripheral < BLE
     def peripheral_advertise: (String | nil) -> Integer
-    # ATT handle is 1..0xffff.
     def notify: (Integer) -> Integer
 
     def request_can_send_now_event: () -> 0
@@ -244,13 +236,10 @@ class BLE
       ?debug: bool
     ) -> Symbol
     def advertising_report_callback: (BLE::AdvertisingReport) -> void
-    # Scan fields must fit uint16; SDK-specific validation/defaults still apply.
     def set_scan_params: (scan_type_t scan_type, Integer scan_interval, Integer scan_window) -> 0
     def start_scan: () -> Integer
     def stop_scan: () -> Integer
     def connect: (BLE::AdvertisingReport) -> bool
-    # Connection 0 is valid; 0xffff is the invalid sentinel and is rejected.
-    # ATT handles are 1..0xffff; write data must fit 65535 bytes.
     def discover_primary_services: (Integer conn_handle) -> Integer
     def read_value_of_characteristic_using_value_handle: (Integer conn_handle, Integer value_handle) -> Integer
     def discover_characteristic_descriptors: (Integer conn_handle, Integer value_handle, Integer end_handle) -> Integer
@@ -265,7 +254,6 @@ class BLE
   class AdvertisingData
     def initialize: () -> void
     attr_reader data: String
-    # Type is 0..255; Integer payloads are unsigned; each AD field fits 255 bytes.
     def add: (Integer, *(String | Integer | nil)) -> Integer
     def self.build: () { (AdvertisingData) -> void } -> String
   end

@@ -12,14 +12,12 @@ extern "C" {
 
 typedef int (*picoruby_nimble_setup_fn)(void);
 
-// Fixed SDK maximum MTU 527 + existing header 12. Separate from the legal length of an attribute value.
 #define PICORUBY_NIMBLE_EVT_MAX 539
 
 int picoruby_nimble_start(picoruby_nimble_setup_fn setup);
 int picoruby_nimble_stop(void);
 bool picoruby_nimble_started(void);
 bool picoruby_nimble_ready(void);
-/* Fixed native latch; cleared only immediately before a new host starts. */
 #define PICORUBY_NIMBLE_CONTROL_WORK_LOST 0x01
 #define PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST 0x08
 void picoruby_nimble_cancel_control(uint8_t reason);

@@ -8,13 +8,12 @@ class DemoBroadcaster < BLE
 
   def adv_data(send_data)
     BLE::AdvertisingData.build do |adv|
-      adv.add(0x01, 0xFF) # BLUETOOTH_DATA_TYPE_FLAGS
-      adv.add(0x09, "PicoRuby") # complete local name
-      adv.add(0xFF, send_data) # manufacturer specific data
+      adv.add(0x01, 0xFF)
+      adv.add(0x09, "PicoRuby")
+      adv.add(0xFF, send_data)
     end
   end
 
-  # No sensor wired; sawtooth fakes the reading (rp2040/broadcaster is the wired version).
   def heartbeat_callback
     @counter += 1
     fake_temp = 2000 + (@counter % 100) * 10

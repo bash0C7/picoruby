@@ -1,6 +1,5 @@
 require 'ble'
 
-# Checks that push_read_value (called from the VM thread) is actually served by the host stack thread, not a stale copy.
 class DynamicReadProbe < BLE
   ADV_FLAGS     = 0x06
   AD_TYPE_FLAGS = 0x01
@@ -43,7 +42,6 @@ class DynamicReadProbe < BLE
     end
   end
 
-  # New value every tick catches a stale mirror; peer requires the RDPROBE- prefix ("STATIC" means unpopulated).
   def heartbeat_callback
     @tick += 1
     value = "RDPROBE-#{@tick}"

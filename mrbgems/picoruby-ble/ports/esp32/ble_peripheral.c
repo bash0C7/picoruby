@@ -24,9 +24,6 @@
 
 static const char *BLE_TAG = "prb_ble_peripheral";
 
-/* All entry points take this gate before adv_mutex or SDK host locks.
- * GAP callbacks run without the SDK host lock; synchronous SDK callbacks
- * re-enter on this same task. Never hold this gate across stop / join. */
 static SemaphoreHandle_t connection_gate;
 static uint16_t con_handle = 0xffff;
 static bool connection_accepting;
@@ -34,7 +31,6 @@ static bool central_connect_pending;
 static uint8_t central_connect_deferred;
 #define CONNECT_DEFERRED_REQUEST 0x01
 #define CONNECT_DEFERRED_RECORD 0x02
-/* Holds only requests not yet generated, and does not reserve resources for an already generated CAN or for later notifies. */
 static bool send_permit_pending;
 static uint16_t send_permit_handle = 0xffff;
 
@@ -58,7 +54,6 @@ picoruby_ble_connection_gate_exit(void)
   xSemaphoreGiveRecursive(connection_gate);
 }
 
-/* Caller holds the gate. These helpers never call the SDK or VM. */
 bool
 picoruby_ble_connection_matches(uint16_t handle)
 {
@@ -172,8 +167,6 @@ picoruby_ble_connection_handle_snapshot(void)
   return handle;
 }
 
-/* Inside the connection gate, actually builds the minimal non-empty notify payload and an independent header at the same time.
- * Using only the public API, places the same leading bytes as the fixed SDK's l2cap_pkt; the probe sends nothing. */
 static struct os_mbuf *
 send_permit_probe(void)
 {
@@ -191,7 +184,7 @@ send_permit_probe(void)
     return NULL;
   }
 
-  uint16_t leading = 4 + 4 + 1; /* ACL + L2CAP + HCI packet indicator */
+  uint16_t leading = 4 + 4 + 1;
 #if !CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE
   leading += BLE_HS_CTRL_DATA_HDR_SZ;
 #endif
@@ -398,8 +391,6 @@ BLE_peripheral_notify(uint16_t att_handle)
   uint16_t nimble_handle = picoruby_ble_handle_r2n(att_handle);
   if (nimble_handle == 0 || !picoruby_ble_connection_gate_enter()) return -1;
   uint16_t handle = picoruby_ble_connection_handle_snapshot();
-  /* Revalidate and keep the gate through SDK transmission. GAP disconnect
-   * cannot finish and process a reused handle while this operation runs. */
   if (!picoruby_ble_connection_matches(handle)) {
     picoruby_ble_connection_gate_exit();
     return notify_status(BLE_HS_ENOTCONN);

@@ -9,7 +9,6 @@ extern "C" {
 #endif
 
 #define BLE_ADVERTISING_DATA_MAX_LEN 31
-// Returns 0 after command submission; nonzero means the request was rejected.
 int BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len, bool connectable);
 void BLE_peripheral_stop_advertise(void);
 int BLE_peripheral_notify(uint16_t att_handle);

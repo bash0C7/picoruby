@@ -1,6 +1,5 @@
 require 'ble'
 
-# packet_callback sees the raw event before anything parses it, so every P1-P7 path the port emits is observable from Ruby.
 class PeripheralPathsProbe < BLE
   ADV_FLAGS     = 0x06
   AD_TYPE_FLAGS = 0x01
@@ -62,7 +61,6 @@ class PeripheralPathsProbe < BLE
       @notify_on = false
       @connected = false
       @disconnects += 1
-      # Gated on the probe's own disconnect count, not a peer write, so P7 stays independent of whether P2/P5 deliver.
       if @disconnects >= 2
         advertise(nil)
         puts "[probe] P7 stop_advertise called"
@@ -84,7 +82,6 @@ class PeripheralPathsProbe < BLE
     if (v = pop_write_value(@write_handle))
       puts "[probe] P5 WRITE_CHR received value=#{v.inspect}"
     end
-    # Gated on @connected, not @notify_on, so a broken CCCD write doesn't also hide P3-P7; notifying unsubscribed is a safe no-op.
     request_can_send_now_event if @connected && @counter % 3 == 0
   end
 end

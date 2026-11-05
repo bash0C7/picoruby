@@ -10,7 +10,6 @@ class BLE
       if !type.is_a?(Integer) || type < 0 || type > 0xff
         raise ArgumentError, "AD type must fit 8 bits"
       end
-      # Build each field locally so invalid data leaves the previous bytes intact.
       field = [type].pack("C")
       # @data is binary, so count bytes and never index it by character
       length = 1

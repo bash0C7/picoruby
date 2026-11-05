@@ -14,8 +14,6 @@ struct ble_gatt_register_ctxt;
 extern "C" {
 #endif
 
-/* Candidate physical gate; retirement / immutable origin integration pending.
- * Gate precedes adv_mutex and SDK host locks. Never span stop / join. */
 bool picoruby_ble_connection_gate_enter(void);
 void picoruby_ble_connection_gate_exit(void);
 bool picoruby_ble_connection_matches(uint16_t handle);
@@ -31,7 +29,6 @@ bool picoruby_ble_connection_begin_connect(void);
 void picoruby_ble_connection_end_connect(void);
 void picoruby_ble_connection_close(void);
 void picoruby_ble_connection_reopen(void);
-/* Caller owns the gate for one complete SDK host event plus reconciliation. */
 void picoruby_ble_reconcile_connections(void);
 bool picoruby_ble_central_reconcile_connect(void);
 bool picoruby_ble_central_connect_lost(const struct ble_gap_conn_desc *conn);
@@ -43,9 +40,7 @@ void picoruby_ble_central_resume_after_connect(void);
 bool picoruby_ble_power_working(void);
 bool picoruby_ble_role_peripheral(void);
 uint16_t picoruby_ble_connection_handle_snapshot(void);
-/* Caller owns the connection gate, or SDK init has discarded old procedures. */
 void picoruby_ble_central_reset_request(void);
-/* Caller keeps the gate from this MTU check through the SDK call. */
 int picoruby_ble_att_payload_status(uint16_t handle, uint16_t size);
 uint8_t picoruby_ble_request_status(int rc);
 

@@ -4,7 +4,6 @@ class DemoObserver < BLE
   TARGET_NAME = "PicoRuby"
 
   def initialize
-    # scan/advertising_report_callback require :central; this demo never calls connect.
     super(:central)
   end
 

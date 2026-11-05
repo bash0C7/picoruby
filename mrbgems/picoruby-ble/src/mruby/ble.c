@@ -7,13 +7,6 @@
 #include "mruby/error.h"
 #include "task.h"
 
-/*
- * Keep one root for the current receiver identity and one for each cached
- * queue/hash. BLE#initialize can replace the receiver's ivars before _init
- * runs again; rooting only the receiver would then lose the old cached
- * graph. Direct graph roots remain valid through that Ruby staging and
- * through native init failure, independently of the current ivars.
- */
 static mrb_state *_mrb = NULL;
 static mrb_value registered_ble;
 static bool ble_registered = false;
@@ -105,7 +98,6 @@ mrb_power_control_registration(mrb_state *mrb, mrb_value self)
     return mrb_false_value();
   }
   if (mode != 0 && !BLE_ready()) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE init failed");
-  /* Comparison and power operation are one non-yielding VM C entry. */
   if (BLE_hci_power_control((uint8_t)mode) != 0) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "BLE power control failed");
   }
@@ -237,7 +229,6 @@ mrb__init(mrb_state *mrb, mrb_value self)
 {
   mrb_value profile;
   mrb_get_args(mrb, "o", &profile);
-  /* Roots belong to one mrb_state. VM teardown/replacement is a separate contract. */
   if (ble_registered && _mrb != mrb) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "BLE belongs to another VM");
   }
@@ -283,9 +274,6 @@ mrb__init(mrb_state *mrb, mrb_value self)
     new_profile = (uint8_t *)mrb_malloc(mrb, new_profile_len);
     memcpy(new_profile, RSTRING_PTR(profile), new_profile_len);
   }
-  /* Stage roots before native init, keeping the old cache rooted even
-   * when self's ivars have already been replaced. The pinned VM counts
-   * repeated registrations, so same-graph reinit is balanced as well. */
   mrb_value prev_ble = registered_ble;
   mrb_value prev_event_queue = event_queue;
   mrb_value prev_write_values = write_values;
@@ -301,7 +289,6 @@ mrb__init(mrb_state *mrb, mrb_value self)
   mrb_bool root_error = false;
   mrb_value root_result = mrb_protect_error(mrb, mrb_ble_stage_roots, &staging, &root_error);
   if (root_error) {
-    /* Only completed registrations are ours to undo. Preserve the exception. */
     mrb_ble_unstage_roots(mrb, &staging);
     if (new_profile) mrb_free(mrb, new_profile);
     mrb_exc_raise(mrb, root_result);

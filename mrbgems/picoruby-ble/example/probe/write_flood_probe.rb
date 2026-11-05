@@ -1,6 +1,5 @@
 require 'ble'
 
-# Prints every 50th arrival, not every one: a per-frame print at 500 frames would stall the VM thread and skew the measurement.
 class WriteFloodProbe < BLE
   ADV_FLAGS     = 0x06
   AD_TYPE_FLAGS = 0x01

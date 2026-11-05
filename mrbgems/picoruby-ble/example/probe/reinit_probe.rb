@@ -1,6 +1,5 @@
 require 'ble'
 
-# Regression probe for BLE._init leaks (event queue, value hashes, GATT profile copy); N alternating-role cycles substitute for heap measurement.
 N = 20
 
 class ReinitPeripheral < BLE

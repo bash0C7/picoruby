@@ -64,7 +64,6 @@ typedef struct {
   uint8_t data[EVQ_PKT_MAX];
 } evq_entry_t;
 
-// In preparation for delayed callbacks, once allocated it is kept for the same lifetime as the original static array.
 static evq_entry_t *evq = NULL;
 static int evq_head = 0;
 static int evq_count = 0;
@@ -110,8 +109,7 @@ static bool lifecycle_busy = false;
 static portMUX_TYPE owner_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static esp_timer_handle_t heartbeat_timer = NULL;
 static esp_timer_handle_t halting_timer = NULL;
-static int heartbeat_depth = 0; // nest count: only the outermost disable actually stops it
-// All runtime accesses use owner_state_mux; timer arrivals may coalesce.
+static int heartbeat_depth = 0;
 static bool heartbeat_pending = false;
 
 void
@@ -421,7 +419,6 @@ picoruby_nimble_heartbeat_enable(bool enable)
   if (stop_timer) esp_timer_stop(heartbeat_timer);
 }
 
-// Unconditional stop, not depth-gated: runs on every BLE_init and must not carry nesting state across sessions.
 static void
 heartbeat_force_stop(void)
 {
@@ -462,8 +459,6 @@ on_reset(int reason)
   ESP_LOGW(TAG, "NimBLE host reset (reason %d)", reason);
 }
 
-/* SDK stop completion and this event are separate: the public SDK stop
- * handshake finishes first, then this own event exits our public NPL loop. */
 static void
 host_exit_event_cb(struct ble_npl_event *event)
 {
@@ -492,7 +487,6 @@ host_task(void *param)
   (void)param;
   struct ble_npl_eventq *queue = nimble_port_get_dflt_eventq();
   while (true) {
-    /* Queue wait must never hold the connection gate. */
     struct ble_npl_event *event = ble_npl_eventq_get(queue, BLE_NPL_TIME_FOREVER);
     if (event != NULL && run_host_event(event)) break;
   }
@@ -530,12 +524,11 @@ finish_start(int status)
   return status;
 }
 
-/* Caller owns lifecycle_busy until this existing stop sequence releases it. */
 static int
 stop_host(bool issue_stop, bool done_seen)
 {
   if (issue_stop) {
-    picoruby_ble_connection_close(); /* Unlocks before blocking host stop / join. */
+    picoruby_ble_connection_close();
     heartbeat_force_stop();
     picoruby_nimble_halting_watchdog_stop();
     ble_gap_adv_stop();
@@ -552,7 +545,6 @@ stop_host(bool issue_stop, bool done_seen)
     taskENTER_CRITICAL(&owner_state_mux);
     host_stop_pending = true;
     taskEXIT_CRITICAL(&owner_state_mux);
-    /* No allocation and no connection gate held on this stop path. */
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &host_exit_event);
   }
   if (!done_seen) {
@@ -601,7 +593,6 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   taskEXIT_CRITICAL(&owner_state_mux);
   if (reserve_event_storage() != 0) return finish_start(-1);
 
-  /* Shared NVS may contain data owned by the application. */
   esp_err_t err = nvs_flash_init();
   if (err != ESP_OK) {
     return finish_start(-1);
@@ -653,7 +644,6 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
     }
     return finish_start(-1);
   }
-  /* Public NPL event_init allocates/asserts at initialization, never at stop. */
   ble_npl_event_init(&host_exit_event, host_exit_event_cb, NULL);
   host_exit_initialized = true;
   (void)xSemaphoreTake(sync_sem, 0);
@@ -681,7 +671,7 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
 
   taskENTER_CRITICAL(&owner_state_mux);
   bool sync_ok = synced;
-  if (!sync_ok) started = true; /* Host resources need the normal stop/join/deinit. */
+  if (!sync_ok) started = true;
   taskEXIT_CRITICAL(&owner_state_mux);
   if (!sync_ok) {
     (void)stop_host(true, false);

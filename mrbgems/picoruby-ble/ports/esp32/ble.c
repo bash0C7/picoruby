@@ -262,7 +262,7 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
       if (!(e->att_flags & BLOB_FLAG_READ)) return BLE_ATT_ERR_READ_NOT_PERMITTED;
       uint8_t read_sec = att_security_status(e->att_flags, true, conn);
       if (read_sec) return read_sec;
-      static uint8_t rd_tmp[RDM_MAX]; // static is safe: this callback has only one caller task
+      static uint8_t rd_tmp[RDM_MAX];
       const uint8_t *data = e->static_value;
       uint16_t len = e->static_len;
       if (e->mirror_slot >= 0) {
@@ -285,7 +285,7 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
         }
       }
       if (data == NULL || len == 0) return 0;
-      return os_mbuf_append(ctxt->om, data, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES; // can allocate, so called after the critical section exits
+      return os_mbuf_append(ctxt->om, data, len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
     case BLE_GATT_ACCESS_OP_WRITE_DSC: {
@@ -384,7 +384,6 @@ props_to_chr_flags(uint8_t props)
   return f;
 }
 
-/* Packed ATT permissions are distinct from characteristic declaration bits. */
 static unsigned
 profile_read_level(uint16_t flags)
 {
@@ -449,7 +448,7 @@ profile_cccd_security(uint16_t flags)
   if (wr >= 2) out |= BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN;
   if (wr >= 3) out |= BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHOR;
 #else
-  (void)flags; /* Older public API has only global CCCD permissions. */
+  (void)flags;
 #endif
   return out;
 }
@@ -458,9 +457,6 @@ static uint16_t profile_reject_handle;
 static const char *profile_reject_reason;
 #define PROFILE_REJECT(h, why) do { profile_reject_handle = (h); profile_reject_reason = (why); return -1; } while (0)
 
-/* Candidate policy, not an assertion of compatibility: reject requirements
- * that these public definition fields cannot preserve, before stopping the
- * old registration. */
 static int
 profile_permissions_supported(uint16_t flags)
 {
@@ -473,8 +469,6 @@ static int
 profile_cccd_supported(uint16_t flags)
 {
   if (!(flags & BLOB_FLAG_DYNAMIC) || profile_permissions_supported(flags) < 0) return -1;
-  /* NimBLE registers automatic CCCDs with READ|WRITE and min_key_size=0;
-   * only its write security requirements have per-characteristic fields. */
   if ((flags & BLOB_FLAG_OPERATIONS) != BLOB_FLAG_OPERATIONS ||
       profile_effective_level(profile_read_level(flags), profile_min_key_size(flags))) return -1;
 #if !defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_ENC) || \
@@ -548,9 +542,6 @@ mirror_assign(attr_map_t *e, uint16_t flags)
   return 0;
 }
 
-/* Classify only reserved record types. Bluetooth-base128 aliases have the
- * same GATT meaning as their 16-bit UUIDs; retain the original UUID bytes
- * everywhere else (including declaration/value matching and SDK UUID data). */
 static uint16_t
 profile_reserved_uuid16(const uint8_t *uuid, uint16_t uuid_len)
 {
@@ -569,7 +560,7 @@ profile_reserved_uuid16(const uint8_t *uuid, uint16_t uuid_len)
   switch (u16) {
     case GATT_PRIMARY_SERVICE_UUID:
     case GATT_SECONDARY_SERVICE_UUID:
-    case 0x2802: /* Include-service declaration. */
+    case 0x2802:
     case GATT_CHARACTERISTIC_UUID:
     case GATT_CCCD_UUID:
       return u16;
@@ -578,9 +569,6 @@ profile_reserved_uuid16(const uint8_t *uuid, uint16_t uuid_len)
   }
 }
 
-/* Read-only preflight: do not discard a running registration for a malformed
- * replacement. Count the same definition, terminator, map and mirror slots as
- * the translator before it can mutate global state or call the SDK. */
 static int
 validate_att_topology(const uint8_t *db, size_t db_len)
 {
@@ -606,9 +594,6 @@ validate_att_topology(const uint8_t *db, size_t db_len)
     if (handle == 0 || handle <= previous_handle) PROFILE_REJECT(handle, "handle is zero or not increasing");
     previous_handle = handle;
 
-    /* A declaration must be followed by its exact value, even if the value
-     * UUID happens to equal a declaration UUID. Never treat a mismatch as a
-     * descriptor or silently abandon it at a new service / terminator. */
     if (expected_handle) {
       if (handle != expected_handle || uuid_len != expected_uuid_len ||
           memcmp(uuid, expected_uuid, uuid_len) != 0) PROFILE_REJECT(handle, "value does not match its declaration");
@@ -622,10 +607,10 @@ validate_att_topology(const uint8_t *db, size_t db_len)
       if ((flags & BLOB_FLAG_OPERATIONS) != BLOB_FLAG_READ ||
           (flags & (BLOB_FLAG_READ_LEVEL | BLOB_FLAG_WRITE_LEVEL | BLOB_FLAG_KEY_SIZE |
                     BLOB_FLAG_READ_SC | BLOB_FLAG_WRITE_SC | BLOB_FLAG_SIGNED_WRITE))) PROFILE_REJECT(handle, "unsupported service record flags");
-      if (has_descs) descs++; /* zero descriptor terminator */
+      if (has_descs) descs++;
       services++;
       uuids++;
-      chars++; /* each service requires a zero characteristic terminator */
+      chars++;
       in_char = has_descs = has_cccd = false;
     } else if (u16 == GATT_CHARACTERISTIC_UUID) {
       if (services == 0) PROFILE_REJECT(handle, "characteristic outside a service");
@@ -646,12 +631,8 @@ validate_att_topology(const uint8_t *db, size_t db_len)
       uuids++;
     } else {
       if (!in_char) PROFILE_REJECT(handle, "descriptor outside a characteristic");
-      /* Include-service declarations have no translation in this adapter.
-       * Ordinary descriptors, including vendor UUIDs, remain supported. */
       if (u16 == 0x2802) PROFILE_REJECT(handle, "include declaration unsupported");
       if (u16 == GATT_CCCD_UUID) {
-        /* NimBLE supplies this descriptor from NOTIFY / INDICATE. Only the
-         * single, initially disabled two-byte form can be coalesced exactly. */
         if (has_cccd || !(props & 0x30) || value_len != 2 ||
             value[0] != 0 || value[1] != 0) PROFILE_REJECT(handle, "CCCD form unsupported");
         if (profile_cccd_supported(flags) < 0) PROFILE_REJECT(handle, "CCCD flags unsupported");
@@ -821,13 +802,11 @@ build_att_db(const uint8_t *db, size_t db_len)
   return 0;
 }
 
-/* Preflight leaves the prior registration intact on input rejection. A
- * defensive build failure must never expose a partly constructed database. */
 static int
 parse_att_db(const uint8_t *db, size_t db_len)
 {
   if (validate_att_topology(db, db_len) < 0) return -1;
-  if (db == NULL) return -1; /* no-database init does not invoke the builder */
+  if (db == NULL) return -1;
   if (build_att_db(db, db_len) == 0) return 0;
   attr_map_count = rdm_used = 0;
   svc_count = chr_slot_count = dsc_slot_count = uuid_count = 0;
@@ -849,7 +828,6 @@ static int
 register_services(void)
 {
   if (picoruby_ble_peripheral_setup() != 0) return -1;
-  // setup runs after SDK init has discarded the previous GATT procedures.
   reset_characteristic_discoveries();
   picoruby_ble_central_reset_request();
   picoruby_ble_central_scan_reset();
@@ -860,7 +838,6 @@ register_services(void)
   return rc;
 }
 
-/* Losing any required result also invalidates a later successful terminal. */
 static void
 enqueue_control_event(const uint8_t *pkt, uint16_t len)
 {
@@ -1016,7 +993,6 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           (role == BLE_ROLE_PERIPHERAL && event->connect.status != BLE_HS_EAGAIN &&
            ble_gap_conn_find(event->connect.conn_handle, NULL) == 0)) {
         if (!picoruby_ble_connection_claim(event->connect.conn_handle)) {
-          /* The SDK can admit more peers than this public adapter supports. */
           int rc = ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
           if (rc != 0) {
             ESP_LOGE(BLE_TAG, "extra connection termination failed: %d", rc);
@@ -1485,12 +1461,9 @@ typedef struct {
   struct ble_gatt_chr prev;
 } characteristic_discovery_t;
 
-// One discovery per connection, matching the RP2040 request boundary.
 static characteristic_discovery_t chr_discoveries[MYNEWT_VAL(BLE_MAX_CONNECTIONS)];
 static portMUX_TYPE chr_disc_mux = portMUX_INITIALIZER_UNLOCKED;
 
-/* Protected by the connection gate. No callback owns Ruby data or an mbuf.
- * Match RP2040's one pending request without using NimBLE's ATT busy queue. */
 enum gatt_request_state {
   GATT_REQUEST_IDLE,
   GATT_REQUEST_PENDING,
@@ -1519,7 +1492,6 @@ static void
 gatt_request_complete(uint16_t conn, uint16_t status)
 {
   if (request_state != GATT_REQUEST_PENDING || request_conn != conn) return;
-  /* The SDK invokes timeout callbacks before initiating disconnect. */
   if (status == BLE_HS_ETIMEOUT) {
     request_state = GATT_REQUEST_WAIT_DISCONNECT;
     return;
@@ -1530,8 +1502,6 @@ gatt_request_complete(uint16_t conn, uint16_t status)
 static void
 gatt_request_returned(uint16_t conn, int rc)
 {
-  /* Inline terminal callbacks may already have completed or closed the request.
-   * The shared gate and enqueue-only callbacks preclude a new request here. */
   if (rc == 0 || request_state != GATT_REQUEST_PENDING || request_conn != conn) return;
   request_state = GATT_REQUEST_IDLE;
 }
@@ -1615,7 +1585,6 @@ disc_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
       emit_characteristic(conn, &discovery->prev, discovery->end_handle);
     }
     discovery->have_prev = false;
-    // No discovery fields are accessed after making the slot reusable.
     taskENTER_CRITICAL(&chr_disc_mux);
     discovery->active = false;
     taskEXIT_CRITICAL(&chr_disc_mux);

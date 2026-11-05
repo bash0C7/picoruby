@@ -4,10 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Validate the byte envelope only. Service/characteristic topology and access
- * semantics belong to the port's translation step. BTstack stops at the first
- * two-byte zero terminator; preserve that rule for trailing bytes. NULL/0 is
- * the existing no-database value, distinct from an empty String. */
 static inline int
 BLE_profile_extent(const uint8_t *db, size_t db_len, size_t *extent)
 {
@@ -24,14 +20,12 @@ BLE_profile_extent(const uint8_t *db, size_t db_len, size_t *extent)
       if (extent) *extent = pos + 2;
       return 0;
     }
-    /* Check the full fixed header before reading flags/handle, then check the
-     * UUID selected by those flags. Use subtraction to avoid size_t overflow. */
     if (entry_size < 8 || entry_size > db_len - pos) return -1;
     uint16_t flags = (uint16_t)db[pos + 2] | ((uint16_t)db[pos + 3] << 8);
     if ((flags & 0x0200) && entry_size < 22) return -1;
     pos += entry_size;
   }
-  return -1; /* Missing or truncated terminator. */
+  return -1;
 }
 
 #endif
