@@ -1059,8 +1059,12 @@ synth_mtu_exchange_complete(uint16_t conn, uint16_t mtu)
 static void
 synth_advertising_report(const struct ble_gap_disc_desc *d)
 {
+  if (d->length_data > 31) {
+    ESP_LOGW(BLE_TAG, "advertising report exceeds 31 bytes: %u", (unsigned)d->length_data);
+    return;
+  }
   uint8_t p[14 + 31];
-  uint8_t dlen = d->length_data > 31 ? 31 : d->length_data;
+  uint8_t dlen = d->length_data;
   p[0] = EVT_GAP_ADVERTISING_REPORT;
   p[2] = d->event_type;
   p[3] = d->addr.type;
