@@ -26,11 +26,17 @@
 #define ATT_READ_RESERVE_BLOCKS 4
 #define NOTIFY_MAX_BLOCKS 3
 #define NOTIFY_RESERVE_KEY (-5)
-#if MYNEWT_VAL(MSYS_1_BLOCK_SIZE) == 256 && MYNEWT_VAL(BLE_ATT_PREFERRED_MTU) <= 256 && \
-    MYNEWT_VAL(MSYS_1_BLOCK_COUNT) >= ATT_READ_RESERVE_BLOCKS + NOTIFY_MAX_BLOCKS
-#define ATT_RESERVE_SUPPORTED 1
-#else
-#define ATT_RESERVE_SUPPORTED 0
+#if MYNEWT_VAL(MSYS_1_BLOCK_SIZE) != 256
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256"
+#endif
+#if MYNEWT_VAL(MSYS_1_BLOCK_COUNT) < ATT_READ_RESERVE_BLOCKS + NOTIFY_MAX_BLOCKS
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT of at least 7"
+#endif
+#if MYNEWT_VAL(BLE_ATT_PREFERRED_MTU) > 256
+#error "picoruby-ble requires CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU of at most 256"
+#endif
+#if defined(CONFIG_BT_LE_MSYS_INIT_IN_CONTROLLER) && CONFIG_BT_LE_MSYS_INIT_IN_CONTROLLER
+#error "picoruby-ble requires CONFIG_BT_LE_MSYS_INIT_IN_CONTROLLER=n"
 #endif
 
 static const char *BLE_TAG = "prb_ble_peripheral";
@@ -182,15 +188,6 @@ static int
 msys1_free_blocks(void)
 {
   static bool missing_logged;
-  static bool unsupported_logged;
-  if (!ATT_RESERVE_SUPPORTED) {
-    if (!unsupported_logged) {
-      unsupported_logged = true;
-      ESP_LOGW(BLE_TAG, "ATT response reserve needs 256-byte msys_1 blocks, ATT MTU <= 256 and %d blocks; disabled",
-               ATT_READ_RESERVE_BLOCKS + NOTIFY_MAX_BLOCKS);
-    }
-    return -1;
-  }
   struct os_mempool_info info;
   struct os_mempool *mp = NULL;
   while ((mp = os_mempool_info_get_next(mp, &info)) != NULL) {

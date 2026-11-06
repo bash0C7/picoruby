@@ -157,6 +157,21 @@ Profile validation on ESP32:
 
 ## Notes
 
-- Runs on BTstack (rp2040: Pico W, Pico 2 W) and on NimBLE (esp32)
+- Runs on BTstack (rp2040: Pico W, Pico 2 W) and on NimBLE (esp32: ESP32-S3)
 - Complex API - refer to examples for common patterns
 - Supports BLE 4.0 and above features
+
+### ESP32 build requirements
+
+The ESP32 port stops the build with `#error` unless these hold:
+
+- ESP-IDF v5.5.4 or later, or v5.4.4 or later on the v5.4 line
+- `CONFIG_BT_NIMBLE_NVS_PERSIST=y`
+- `CONFIG_BT_NIMBLE_SM_SC=y`
+- `CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=n`
+- `CONFIG_BT_NIMBLE_EXT_ADV=n`
+- `CONFIG_BT_NIMBLE_HOST_ALLOW_CONNECT_WITH_SCAN=n`
+- `CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256`
+- `CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT` of at least 7
+- `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU` of at most 256
+- `CONFIG_BT_LE_MSYS_INIT_IN_CONTROLLER=n` on chips that have this option
