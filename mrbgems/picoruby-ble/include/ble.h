@@ -47,7 +47,6 @@ void BLE_read_value_pushed(uint16_t att_handle, const uint8_t *data, uint16_t si
 
 int BLE_init(const uint8_t *profile, size_t profile_len, int ble_role);
 enum BLE_power_control_result_t {
-  BLE_POWER_CONTROL_INVALID = -1,
   BLE_POWER_CONTROL_NOT_READY = -3
 };
 int BLE_hci_power_control(uint8_t power_mode);

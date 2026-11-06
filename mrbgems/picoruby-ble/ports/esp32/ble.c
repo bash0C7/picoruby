@@ -84,7 +84,6 @@ static const char *BLE_TAG = "prb_ble_evq";
 #define RDM_MAX BLE_ATT_ATTR_MAX_LEN
 
 static enum BLE_role_t role = BLE_ROLE_NONE;
-static bool power_on_requested = false;
 static uint8_t power_state = HCI_STATE_OFF;
 static uint8_t central_connect_event[21];
 static uintptr_t central_connect_token;
@@ -893,15 +892,16 @@ build_att_db(const uint8_t *db, size_t db_len)
 }
 
 static void reset_characteristic_discoveries(void);
+static void power_reset(void);
 
 static int
-register_services(void)
+host_setup(void)
 {
   if (picoruby_ble_peripheral_setup() != 0) return -1;
   reset_characteristic_discoveries();
   picoruby_ble_central_reset_request();
   picoruby_ble_central_scan_reset();
-  power_state = HCI_STATE_OFF;
+  power_reset();
   if (!have_services) return 0;
   int rc = ble_gatts_count_cfg(svc_defs);
   if (rc == 0) rc = ble_gatts_add_svcs(svc_defs);
@@ -927,6 +927,12 @@ bool
 picoruby_ble_power_working(void)
 {
   return power_state == HCI_STATE_WORKING;
+}
+
+static void
+power_reset(void)
+{
+  power_state = HCI_STATE_OFF;
 }
 
 bool
@@ -1036,17 +1042,44 @@ synth_advertising_report(const struct ble_gap_disc_desc *d)
   picoruby_nimble_enqueue_event(p, total_len, PICORUBY_NIMBLE_EVENT_DATA);
 }
 
+static uintptr_t
+central_connect_hold(uint16_t conn_handle)
+{
+  struct ble_gap_conn_desc desc;
+  build_le_connection_complete(central_connect_event, conn_handle, 0,
+                               ble_gap_conn_find(conn_handle, &desc) == 0 ? &desc : NULL);
+  central_connect_token = ++central_connect_serial;
+  return central_connect_token;
+}
+
+static uintptr_t
+central_connect_held(void)
+{
+  return central_connect_token;
+}
+
+static uint16_t
+central_connect_held_handle(void)
+{
+  return (uint16_t)(central_connect_event[4] | (central_connect_event[5] << 8));
+}
+
+static void
+central_connect_settle(bool deliver)
+{
+  central_connect_token = 0;
+  if (deliver) enqueue_control_event(central_connect_event, sizeof(central_connect_event));
+}
+
 static int
 central_mtu_cb(uint16_t conn, const struct ble_gatt_error *error, uint16_t mtu, void *arg)
 {
   (void)mtu;
-  if (error != NULL && error->status != 0) {
+  if (error->status != 0) {
     ESP_LOGW(BLE_TAG, "MTU exchange failed: conn=%u status=%u", (unsigned)conn, (unsigned)error->status);
   }
-  if (central_connect_token != 0 && (uintptr_t)arg == central_connect_token &&
-      picoruby_ble_connection_matches(conn)) {
-    central_connect_token = 0;
-    enqueue_control_event(central_connect_event, sizeof(central_connect_event));
+  if ((uintptr_t)arg == central_connect_held() && picoruby_ble_connection_matches(conn)) {
+    central_connect_settle(true);
   }
   return 0;
 }
@@ -1094,16 +1127,12 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         conn_security_set(false);
         picoruby_ble_central_reset_request();
         if (role == BLE_ROLE_CENTRAL) {
-          struct ble_gap_conn_desc desc;
-          build_le_connection_complete(central_connect_event, event->connect.conn_handle, 0,
-                                       ble_gap_conn_find(event->connect.conn_handle, &desc) == 0 ? &desc : NULL);
-          central_connect_token = ++central_connect_serial;
-          int mtu_rc = ble_gattc_exchange_mtu(event->connect.conn_handle, central_mtu_cb, (void *)central_connect_token);
+          uintptr_t token = central_connect_hold(event->connect.conn_handle);
+          int mtu_rc = ble_gattc_exchange_mtu(event->connect.conn_handle, central_mtu_cb, (void *)token);
           if (mtu_rc != 0) {
             ESP_LOGW(BLE_TAG, "MTU exchange request failed: conn=%u rc=%d",
                      (unsigned)event->connect.conn_handle, mtu_rc);
-            central_connect_token = 0;
-            enqueue_control_event(central_connect_event, sizeof(central_connect_event));
+            central_connect_settle(true);
           }
           picoruby_ble_central_resume_after_connect();
         }
@@ -1233,14 +1262,6 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_NOTIFY_RX: {
       if (role != BLE_ROLE_CENTRAL || !picoruby_ble_connection_matches(event->notify_rx.conn_handle)) break;
       uint16_t vlen = OS_MBUF_PKTLEN(event->notify_rx.om);
-      if (vlen > VALUE_EVENT_DATA_MAX) {
-        uint32_t s;
-        if (picoruby_log_due(PICORUBY_LOG_NOTIFY_RX, &s)) {
-          ESP_LOGW(BLE_TAG, "notification exceeds event capacity: %u (%lu suppressed)",
-                   (unsigned)vlen, (unsigned long)s);
-        }
-        break;
-      }
       uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 4 + VALUE_EVENT_DATA_MAX];
       gatt_event_header(p, event->notify_rx.indication ? EVT_GATT_INDICATION : EVT_GATT_NOTIFICATION,
                         (uint8_t)(GATT_EVENT_PAYLOAD_OFFSET + 2 + vlen), event->notify_rx.conn_handle);
@@ -1266,8 +1287,6 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
 static void
 power_set_heartbeat(bool on)
 {
-  if (power_on_requested == on) return;
-  power_on_requested = on;
   picoruby_nimble_heartbeat_enable(on);
 }
 
@@ -1295,14 +1314,10 @@ power_terminate_connection(void)
   for (int i = 0; i < links.count; i++) {
     if (links.handle[i] == claimed) claimed_listed = true;
   }
-  if (central_connect_token != 0) {
-    central_connect_token = 0;
-    uint16_t held = (uint16_t)(central_connect_event[4] | (central_connect_event[5] << 8));
-    if (claimed_listed && held == claimed) {
-      enqueue_control_event(central_connect_event, sizeof(central_connect_event));
-    }
+  if (central_connect_held() != 0) {
+    central_connect_settle(claimed_listed && central_connect_held_handle() == claimed);
   }
-  if (claimed != 0xffff && !claimed_listed) picoruby_ble_connection_forget(claimed);
+  if (!claimed_listed) picoruby_ble_connection_forget(claimed);
   for (int i = 0; i < links.count; i++) {
     peripheral_adopt(links.handle[i]);
   }
@@ -1331,7 +1346,6 @@ power_halting_step(void)
 {
   if (power_state != HCI_STATE_HALTING) return;
   if (power_terminate_connection() > 0) return;
-  if (picoruby_ble_connection_handle_snapshot() != 0xffff) return;
   if (picoruby_ble_connection_connect_pending()) return;
   if (picoruby_ble_connection_release_deferred_record()) {
     synth_disconnection_complete(0xffff, BLE_ERR_CONN_TERM_LOCAL);
@@ -1406,11 +1420,10 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
     return -1;
   }
   role = (enum BLE_role_t)ble_role;
-  power_on_requested = false;
   picoruby_ble_connection_close();
   terminating_clear();
   picoruby_ble_known_links_clear();
-  central_connect_token = 0;
+  central_connect_settle(false);
   have_services = false;
   attr_map_count = 0;
   rdm_used = 0;
@@ -1429,11 +1442,10 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   if (mismatch) {
     ESP_LOGW(BLE_TAG, "GATT layout differs from profile at handle %u", (unsigned)mismatch);
   }
-  int rc = picoruby_nimble_start(register_services);
+  int rc = picoruby_nimble_start(host_setup);
   if (rc != 0) {
     ESP_LOGE(BLE_TAG, "NimBLE start failed: %d", rc);
-    attr_map_count = rdm_used = 0;
-    have_services = false;
+    attr_map_count = 0;
     return rc;
   }
   if (rdm_used > 0) {
@@ -1442,8 +1454,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
     if (rdm_pool == NULL) {
       ESP_LOGE(BLE_TAG, "read mirror pool allocation failed: %u bytes", (unsigned)pool_bytes);
       if (picoruby_nimble_stop() != 0) ESP_LOGE(BLE_TAG, "NimBLE stop failed");
-      attr_map_count = rdm_used = 0;
-      have_services = false;
+      attr_map_count = 0;
       return -1;
     }
   }
@@ -1487,10 +1498,10 @@ power_resume_requests(void)
 int
 BLE_hci_power_control(uint8_t power_mode)
 {
-  if (power_mode > 2) return BLE_POWER_CONTROL_INVALID;
   if (!picoruby_nimble_ready() && (power_mode != 0 || !picoruby_nimble_started())) {
-    power_state = HCI_STATE_OFF;
-    power_on_requested = false;
+    bool gated = picoruby_ble_connection_gate_enter();
+    power_reset();
+    if (gated) picoruby_ble_connection_gate_exit();
     picoruby_nimble_halting_watchdog_stop();
     picoruby_nimble_heartbeat_enable(false);
     return power_mode == 0 ? 0 : BLE_POWER_CONTROL_NOT_READY;
@@ -1574,7 +1585,7 @@ picoruby_ble_att_payload_status(uint16_t handle, uint16_t size)
 {
   uint16_t mtu = ble_att_mtu(handle);
   if (mtu == 0) return BLE_HS_ENOTCONN;
-  if (mtu < 3 || size > mtu - 3u) return BLE_HS_EMSGSIZE;
+  if (size > mtu - 3u) return BLE_HS_EMSGSIZE;
   return 0;
 }
 
@@ -1674,7 +1685,7 @@ disc_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
             const struct ble_gatt_svc *service, void *arg)
 {
   (void)arg;
-  if (error->status == 0 && service) {
+  if (error->status == 0) {
     uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 20];
     gatt_event_header(p, EVT_GATT_SERVICE_QUERY_RESULT, sizeof(p) - 2, conn);
     put_le16(p + GATT_EVENT_PAYLOAD_OFFSET, service->start_handle);
@@ -1706,17 +1717,16 @@ disc_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
             const struct ble_gatt_chr *chr, void *arg)
 {
   characteristic_discovery_t *discovery = arg;
-  if (error->status == 0 && chr) {
+  if (error->status == 0) {
     if (discovery->have_prev) {
       emit_characteristic(conn, &discovery->prev, chr->def_handle - 1);
     }
     discovery->prev = *chr;
     discovery->have_prev = true;
   } else {
-    if (discovery->have_prev && (error->status == 0 || error->status == BLE_HS_EDONE)) {
+    if (discovery->have_prev && error->status == BLE_HS_EDONE) {
       emit_characteristic(conn, &discovery->prev, discovery->end_handle);
     }
-    discovery->have_prev = false;
     taskENTER_CRITICAL(&chr_disc_mux);
     discovery->active = false;
     taskEXIT_CRITICAL(&chr_disc_mux);
@@ -1732,7 +1742,7 @@ disc_dsc_cb(uint16_t conn, const struct ble_gatt_error *error,
 {
   (void)chr_val_handle;
   (void)arg;
-  if (error->status == 0 && dsc) {
+  if (error->status == 0) {
     uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 18];
     gatt_event_header(p, EVT_GATT_ALL_DESCRIPTORS_QUERY_RESULT, sizeof(p) - 2, conn);
     put_le16(p + GATT_EVENT_PAYLOAD_OFFSET, dsc->handle);
@@ -1751,12 +1761,8 @@ read_attr_cb(uint16_t conn, const struct ble_gatt_error *error,
 {
   (void)arg;
   gatt_request_complete(conn, error->status);
-  if (error->status == 0 && attr && attr->om) {
+  if (error->status == 0) {
     uint16_t vlen = OS_MBUF_PKTLEN(attr->om);
-    if (vlen > VALUE_EVENT_DATA_MAX) {
-      synth_query_complete(conn, att_status(BLE_HS_EMSGSIZE));
-      return 0;
-    }
     uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 4 + VALUE_EVENT_DATA_MAX];
     gatt_event_header(p, EVT_GATT_CHARACTERISTIC_VALUE_QUERY_RESULT,
                       (uint8_t)(GATT_EVENT_PAYLOAD_OFFSET + 2 + vlen), conn);
