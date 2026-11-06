@@ -92,7 +92,6 @@ static uintptr_t central_connect_serial;
 
 static uint8_t *rdm_pool = NULL;
 static uint16_t rdm_len[RDM_SLOTS];
-static bool     rdm_valid[RDM_SLOTS];
 static bool     rdm_oversize[RDM_SLOTS];
 static int      rdm_used = 0;
 static portMUX_TYPE rdm_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -308,13 +307,6 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
     return BLE_ATT_ERR_UNLIKELY;
   }
   attr_map_t *e = (attr_map_t *)arg;
-  if (e == NULL) {
-    if (picoruby_log_due(PICORUBY_LOG_ATT_NO_MAP, &s)) {
-      ESP_LOGW(BLE_TAG, "ATT access rejected: no attribute map: handle=%u op=%u (%lu suppressed)",
-               (unsigned)attr_handle, (unsigned)ctxt->op, (unsigned long)s);
-    }
-    return BLE_ATT_ERR_UNLIKELY;
-  }
 
   switch (ctxt->op) {
     case BLE_GATT_ACCESS_OP_READ_CHR:
@@ -327,22 +319,15 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
       uint16_t len = e->static_len;
       if (e->mirror_slot >= 0) {
         uint16_t n;
-        bool valid;
         bool oversize;
         taskENTER_CRITICAL(&rdm_mux);
         n = rdm_len[e->mirror_slot];
-        valid = rdm_valid[e->mirror_slot];
         oversize = rdm_oversize[e->mirror_slot];
         if (n > 0) memcpy(rd_tmp, rdm_pool + (size_t)e->mirror_slot * RDM_MAX, n);
         taskEXIT_CRITICAL(&rdm_mux);
         if (oversize) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-        if (valid) {
-          data = rd_tmp;
-          len = n;
-        } else {
-          data = NULL;
-          len = 0;
-        }
+        data = rd_tmp;
+        len = n;
       }
       if (data == NULL || len == 0) return 0;
       if (os_mbuf_append(ctxt->om, data, len) == 0) return 0;
@@ -370,13 +355,7 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
         }
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
       }
-      if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len) != 0) {
-        if (picoruby_log_due(PICORUBY_LOG_WRITE_COPY, &s)) {
-          ESP_LOGW(BLE_TAG, "write mbuf copy failed: handle=%u (%lu suppressed)",
-                   (unsigned)e->ruby_handle, (unsigned long)s);
-        }
-        return BLE_ATT_ERR_UNLIKELY;
-      }
+      ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len);
       if (picoruby_nimble_enqueue_write(e->ruby_handle, buf, out_len) != 0) {
         return BLE_ATT_ERR_INSUFFICIENT_RES;
       }
@@ -394,7 +373,6 @@ mirror_store(int slot, uint16_t ruby_handle, const uint8_t *data, uint16_t size)
   taskENTER_CRITICAL(&rdm_mux);
   if (!oversize && size > 0) memcpy(rdm_pool + (size_t)slot * RDM_MAX, data, size);
   rdm_len[slot] = oversize ? 0 : size;
-  rdm_valid[slot] = true;
   bool newly_oversize = oversize && !rdm_oversize[slot];
   rdm_oversize[slot] = oversize;
   taskEXIT_CRITICAL(&rdm_mux);
@@ -418,15 +396,13 @@ BLE_read_value_pushed(uint16_t att_handle, const uint8_t *data, uint16_t size)
 void
 picoruby_ble_refresh_read_mirrors(void)
 {
-  static uint8_t tmp[RDM_MAX];
   for (int i = 0; i < attr_map_count; i++) {
     attr_map_t *e = &attr_map[i];
     if (e->mirror_slot < 0) continue;
     BLE_read_value_t rv = { .att_handle = e->ruby_handle, .data = NULL, .size = 0 };
     if (BLE_read_data(&rv) != 0 || rv.data == NULL) continue;
     uint16_t n = rv.size;
-    if (n <= RDM_MAX) memcpy(tmp, rv.data, n);
-    mirror_store(e->mirror_slot, e->ruby_handle, tmp, n);
+    mirror_store(e->mirror_slot, e->ruby_handle, rv.data, n);
   }
 }
 
@@ -545,7 +521,7 @@ profile_permissions_supported(uint16_t flags)
 static int
 profile_cccd_supported(uint16_t flags)
 {
-  if (!(flags & BLOB_FLAG_DYNAMIC) || profile_permissions_supported(flags) < 0) return -1;
+  if (!(flags & BLOB_FLAG_DYNAMIC)) return -1;
   if ((flags & BLOB_FLAG_OPERATIONS) != BLOB_FLAG_OPERATIONS ||
       profile_effective_level(profile_read_level(flags), profile_min_key_size(flags))) return -1;
 #if !defined(BLE_GATT_CHR_F_NOTIFY_INDICATE_ENC) || \
@@ -559,20 +535,14 @@ profile_cccd_supported(uint16_t flags)
 static const ble_uuid_t *
 alloc_uuid(const uint8_t *buf, uint16_t len)
 {
-  if (uuid_count >= MAX_UUIDS) return NULL;
-  ble_uuid_any_t *u = &uuid_pool[uuid_count];
-  if (ble_uuid_init_from_buf(u, buf, len) != 0) return NULL;
-  uuid_count++;
+  ble_uuid_any_t *u = &uuid_pool[uuid_count++];
+  ble_uuid_init_from_buf(u, buf, len);
   return &u->u;
 }
 
 static attr_map_t *
 alloc_map(uint16_t ruby_handle)
 {
-  if (ruby_handle == 0 || attr_map_count >= MAX_ATTRS) return NULL;
-  for (int i = 0; i < attr_map_count; i++) {
-    if (attr_map[i].ruby_handle == ruby_handle) return NULL;
-  }
   attr_map_t *e = &attr_map[attr_map_count++];
   memset(e, 0, sizeof(*e));
   e->ruby_handle = ruby_handle;
@@ -583,40 +553,29 @@ alloc_map(uint16_t ruby_handle)
 static struct ble_gatt_svc_def *
 alloc_svc(void)
 {
-  if (svc_count >= MAX_SVCS) return NULL;
   return &svc_defs[svc_count++];
 }
 
 static struct ble_gatt_chr_def *
 alloc_chr(void)
 {
-  if (chr_slot_count >= MAX_CHR_SLOTS) return NULL;
   return &chr_slots[chr_slot_count++];
 }
 
 static struct ble_gatt_dsc_def *
 alloc_dsc(void)
 {
-  if (dsc_slot_count >= MAX_DSC_SLOTS) return NULL;
   return &dsc_slots[dsc_slot_count++];
 }
 
-static int
+static void
 mirror_assign(attr_map_t *e, uint16_t flags)
 {
   const uint16_t need = BLOB_FLAG_DYNAMIC | BLOB_FLAG_READ;
-  if (e == NULL || (flags & need) != need) return 0;
-  if (rdm_used >= RDM_SLOTS) {
-    ESP_LOGE(BLE_TAG,
-             "read mirror slots exhausted (RDM_SLOTS=%d); ruby_handle=%u cannot be initialized",
-             RDM_SLOTS, (unsigned)e->ruby_handle);
-    return -1;
-  }
+  if ((flags & need) != need) return;
   e->mirror_slot = (int16_t)rdm_used++;
   rdm_len[e->mirror_slot] = 0;
-  rdm_valid[e->mirror_slot] = false;
   rdm_oversize[e->mirror_slot] = false;
-  return 0;
 }
 
 static uint16_t
@@ -682,8 +641,6 @@ include_target(const svc_info_t *svcs, int current, const uint8_t *value, uint16
 static int
 validate_att_topology(const uint8_t *db, size_t db_len)
 {
-  if (BLE_profile_extent(db, db_len, &db_len) < 0) PROFILE_REJECT(0, "malformed profile blob");
-  if (db == NULL) return 0;
   int services = 0, chars = 0, descs = 0, maps = 0, uuids = 0, mirrors = 0, cccds = 0, includes = 0;
   bool in_char = false, has_descs = false, has_cccd = false, after_service = false;
   svc_info_t svcs[MAX_SVCS] = { { 0 } };
@@ -770,7 +727,7 @@ validate_att_topology(const uint8_t *db, size_t db_len)
             (BLOB_FLAG_DYNAMIC | BLOB_FLAG_READ)) mirrors++;
       }
     }
-    if (services > 0 && services <= MAX_SVCS) svcs[services - 1].last_handle = handle;
+    if (services <= MAX_SVCS) svcs[services - 1].last_handle = handle;
     if (services > MAX_SVCS || includes > MAX_INCLUDES || chars > MAX_CHR_SLOTS ||
         descs > MAX_DSC_SLOTS || maps > MAX_ATTRS ||
         uuids > MAX_UUIDS || mirrors > RDM_SLOTS ||
@@ -785,7 +742,6 @@ validate_att_topology(const uint8_t *db, size_t db_len)
 static uint16_t
 profile_layout_mismatch(const uint8_t *db, size_t db_len)
 {
-  if (db == NULL) return 0;
   uint16_t next = 1, cccd_slot = 0, value_handle = 0, expected_value = 0;
   bool pending = false;
   uint8_t props = 0;
@@ -828,10 +784,9 @@ profile_layout_mismatch(const uint8_t *db, size_t db_len)
   return pending ? value_handle : 0;
 }
 
-static int
+static void
 build_att_db(const uint8_t *db, size_t db_len)
 {
-  if (BLE_profile_extent(db, db_len, &db_len) < 0) return -1;
   attr_map_count = 0;
   rdm_used = 0;
   svc_count = chr_slot_count = dsc_slot_count = uuid_count = 0;
@@ -847,20 +802,14 @@ build_att_db(const uint8_t *db, size_t db_len)
   struct ble_gatt_chr_def *cur_chr = NULL;
   attr_map_t *cur_chr_map = NULL;
   uint16_t expected_value_handle = 0;
-  const uint8_t *cur_chr_uuid = NULL;
-  uint16_t cur_chr_uuid_len = 0;
 
   size_t pos = 1;
   while (pos + 2 <= db_len) {
     uint16_t entry_size = get_le16(db + pos);
     if (entry_size == 0) break;
-    if (entry_size < 8 || entry_size > db_len - pos) return -1;
     uint16_t flags = get_le16(db + pos + 2);
     uint16_t handle = get_le16(db + pos + 4);
     uint16_t uuid_len = (flags & BLOB_FLAG_LONG_UUID) ? 16 : 2;
-    if (entry_size < 6 + uuid_len) {
-      return -1;
-    }
     const uint8_t *uuid = db + pos + 6;
     const uint8_t *value = uuid + uuid_len;
     uint16_t value_len = entry_size - 6 - uuid_len;
@@ -868,103 +817,67 @@ build_att_db(const uint8_t *db, size_t db_len)
     pos += entry_size;
 
     if (expected_value_handle) {
-      if (!cur_chr_map || handle != expected_value_handle || uuid_len != cur_chr_uuid_len ||
-          memcmp(uuid, cur_chr_uuid, uuid_len) != 0) return -1;
       cur_chr_map->att_flags = flags;
       cur_chr_map->static_value = value;
       cur_chr_map->static_len = value_len;
-      if (mirror_assign(cur_chr_map, flags) != 0) return -1;
+      mirror_assign(cur_chr_map, flags);
       expected_value_handle = 0;
     } else if (u16 == GATT_PRIMARY_SERVICE_UUID || u16 == GATT_SECONDARY_SERVICE_UUID) {
-      if (cur_chr && cur_chr->descriptors && alloc_dsc() == NULL) return -1;
+      if (cur_chr && cur_chr->descriptors) alloc_dsc();
       cur_chr = NULL;
       cur_chr_map = NULL;
-      if (cur_svc && alloc_chr() == NULL) return -1;
+      if (cur_svc) alloc_chr();
       cur_svc = alloc_svc();
-      if (cur_svc == NULL) return -1;
       cur_svc->type = (u16 == GATT_PRIMARY_SERVICE_UUID)
                         ? BLE_GATT_SVC_TYPE_PRIMARY : BLE_GATT_SVC_TYPE_SECONDARY;
       cur_svc->uuid = alloc_uuid(value, value_len);
       cur_svc->characteristics = &chr_slots[chr_slot_count];
-      if (cur_svc->uuid == NULL) return -1;
       if (include_open) {
         include_pool_used++;
         include_open = false;
       }
       svcs[svc_count - 1] = (svc_info_t){ handle, handle, value_len, value };
-    } else if (u16 == 0x2802 && cur_svc && !cur_chr) {
+    } else if (u16 == 0x2802) {
       const char *include_reason = NULL;
-      if (value_len < 4) return -1;
       int target = include_target(svcs, svc_count - 1, value, value_len, &include_reason);
-      if (target < 0 || include_pool_used >= MAX_INCLUDES + MAX_SVCS - 1) return -1;
       if (!include_open) {
         cur_svc->includes = &include_pool[include_pool_used];
         include_open = true;
       }
       include_pool[include_pool_used++] = &svc_defs[target];
-    } else if (u16 == GATT_CHARACTERISTIC_UUID && cur_svc) {
-      if (cur_chr && cur_chr->descriptors && alloc_dsc() == NULL) return -1;
-      if (value_len < 3) return -1;
+    } else if (u16 == GATT_CHARACTERISTIC_UUID) {
+      if (cur_chr && cur_chr->descriptors) alloc_dsc();
       uint8_t props = value[0];
       expected_value_handle = get_le16(value + 1);
-      cur_chr_uuid = value + 3;
-      cur_chr_uuid_len = value_len - 3;
       cur_chr = alloc_chr();
-      if (cur_chr == NULL) return -1;
       cur_chr->uuid = alloc_uuid(value + 3, value_len - 3);
       cur_chr->access_cb = gatt_access_cb;
       cur_chr->flags = props_to_chr_flags(props);
       cur_chr_map = alloc_map(expected_value_handle);
-      if (cur_chr->uuid == NULL || cur_chr_map == NULL) return -1;
       cur_chr->arg = cur_chr_map;
       cur_chr->val_handle = &cur_chr_map->nimble_handle;
-    } else if (u16 == GATT_CCCD_UUID && cur_chr_map) {
+    } else if (u16 == GATT_CCCD_UUID) {
       cur_chr->flags |= profile_cccd_security(flags);
       cur_chr_map->cccd_ruby_handle = handle;
-    } else if (cur_chr) {
+    } else {
       struct ble_gatt_dsc_def *dsc = alloc_dsc();
       attr_map_t *m = alloc_map(handle);
-      if (dsc == NULL || m == NULL) return -1;
       m->att_flags = flags;
       m->static_value = value;
       m->static_len = value_len;
-      if (mirror_assign(m, flags) != 0) return -1;
+      mirror_assign(m, flags);
       if (cur_chr->descriptors == NULL) cur_chr->descriptors = dsc;
       dsc->uuid = alloc_uuid(uuid, uuid_len);
       dsc->att_flags = profile_dsc_flags(flags);
       dsc->access_cb = gatt_access_cb;
       dsc->arg = m;
-      if (dsc->uuid == NULL) return -1;
     }
-    if (svc_count > 0) svcs[svc_count - 1].last_handle = handle;
+    svcs[svc_count - 1].last_handle = handle;
   }
 
-  if (cur_chr && cur_chr->descriptors && alloc_dsc() == NULL) return -1;
-  if (cur_svc && alloc_chr() == NULL) return -1;
+  if (cur_chr && cur_chr->descriptors) alloc_dsc();
+  if (cur_svc) alloc_chr();
   have_services = (svc_count > 0);
-  return 0;
-}
-
-static int
-parse_att_db(const uint8_t *db, size_t db_len)
-{
-  if (validate_att_topology(db, db_len) < 0) return -1;
-  if (db == NULL) return -1;
-  if (build_att_db(db, db_len) == 0) return 0;
-  attr_map_count = rdm_used = 0;
-  svc_count = chr_slot_count = dsc_slot_count = uuid_count = 0;
-  include_pool_used = 0;
-  have_services = false;
-  memset(attr_map, 0, sizeof(attr_map));
-  memset(svc_defs, 0, sizeof(svc_defs));
-  memset(include_pool, 0, sizeof(include_pool));
-  memset(chr_slots, 0, sizeof(chr_slots));
-  memset(dsc_slots, 0, sizeof(dsc_slots));
-  memset(uuid_pool, 0, sizeof(uuid_pool));
-  memset(rdm_len, 0, sizeof(rdm_len));
-  memset(rdm_valid, 0, sizeof(rdm_valid));
-  memset(rdm_oversize, 0, sizeof(rdm_oversize));
-  return -1;
 }
 
 static void reset_characteristic_discoveries(void);
@@ -1494,12 +1407,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
 
   free(owned_profile_data);
   owned_profile_data = replacement;
-  if (replacement && parse_att_db(replacement, len) < 0) {
-    free(owned_profile_data);
-    owned_profile_data = NULL;
-    ESP_LOGE(BLE_TAG, "profile translation failed");
-    return -1;
-  }
+  if (replacement) build_att_db(replacement, len);
   int cccds = 0;
   for (int i = 0; i < attr_map_count; i++) {
     if (attr_map[i].cccd_ruby_handle) cccds++;

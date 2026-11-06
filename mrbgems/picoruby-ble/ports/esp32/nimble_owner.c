@@ -111,11 +111,9 @@ static uint32_t log_suppressed[PICORUBY_LOG_SITE_COUNT];
 static const char *const log_site_name[PICORUBY_LOG_SITE_COUNT] = {
   "ATT access without connection gate",
   "ATT access without matching connection",
-  "ATT access without attribute map",
   "ATT security check without connection",
   "read response append failure",
   "write exceeding capacity",
-  "write mbuf copy failure",
   "late connection termination failure",
   "advertising report over 31 bytes",
   "notification receive failure",
