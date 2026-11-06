@@ -53,6 +53,8 @@ mrb_tcp_socket_initialize(mrb_state *mrb, mrb_value self)
   return self;
 }
 
+/* Only the RP2040 poll mode registers these (see tcp_socket_init). */
+#ifdef PICO_CYW43_ARCH_POLL
 static mrb_value
 mrb_tcp_socket_connection_state(mrb_state *mrb, mrb_value self)
 {
@@ -61,7 +63,7 @@ mrb_tcp_socket_connection_state(mrb_state *mrb, mrb_value self)
   if (!sock) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "socket is not initialized");
   }
-  return mrb_fixnum_value(TCPSocket_connection_state(mrb, sock));
+  return mrb_int_value(mrb, TCPSocket_connection_state(mrb, sock));
 }
 
 static mrb_value
@@ -72,6 +74,7 @@ mrb_tcp_socket_error_message(mrb_state *mrb, mrb_value self)
   if (!sock || !sock->errmsg[0]) return mrb_nil_value();
   return mrb_str_new_cstr(mrb, sock->errmsg);
 }
+#endif
 
 /* socket.send(data, flags) */
 static mrb_value
@@ -96,7 +99,7 @@ mrb_tcp_socket_send(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_RUNTIME_ERROR, "send failed");
   }
 
-  return mrb_fixnum_value(sent);
+  return mrb_int_value(mrb, sent);
 }
 
 /* socket.readpartial(maxlen) */
@@ -269,7 +272,7 @@ mrb_tcp_socket_remote_port(mrb_state *mrb, mrb_value self)
     return mrb_nil_value();
   }
 
-  return mrb_fixnum_value(port);
+  return mrb_int_value(mrb, port);
 }
 
 /* socket.ready? */

@@ -7,13 +7,11 @@ include(pico_sdk_import.cmake)
 # Initialize the SDK
 pico_sdk_init()
 
-option(R2P2_NO_SHARED_ALLOC "Use pico-sdk/newlib malloc implementation instead of routing libc allocation to Estalloc" OFF)
-if(R2P2_NO_SHARED_ALLOC)
-  add_compile_definitions(R2P2_NO_SHARED_ALLOC=1)
-else()
-  if(TARGET pico_malloc)
-    set_target_properties(pico_malloc PROPERTIES INTERFACE_SOURCES "")
-  endif()
+# libc allocation is routed to Estalloc (picoruby-machine/ports/rp2040/
+# heap_wrap.c via --wrap below). Drop the pico-sdk malloc wrappers so their
+# __wrap_* symbols do not compete with ours.
+if(TARGET pico_malloc)
+  set_target_properties(pico_malloc PROPERTIES INTERFACE_SOURCES "")
 endif()
 
 execute_process (COMMAND date +%Y%m%d OUTPUT_VARIABLE CMAKE_BUILDDATE OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -99,7 +97,7 @@ endif()
 # Core1 is used for PSG audio processing but doesn't access flash during BTStack operations
 add_compile_definitions(PICO_FLASH_ASSUME_CORE1_SAFE=1)
 
-set(PICORBC ${PICORUBY_ROOT}/bin/mrbc)
+set(PICORBC ${PICORUBY_ROOT}/build/${MRUBY_CONFIG}/bin/mrbc)
 
 add_custom_target(mrbdir ALL
   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/mrb
@@ -129,15 +127,13 @@ pico_generate_pio_header(${PROJECT_NAME}
 )
 
 target_link_options(${PROJECT_NAME} PRIVATE -Wl,--gc-sections)
-if(NOT R2P2_NO_SHARED_ALLOC)
-  target_link_options(${PROJECT_NAME} PRIVATE
-    -Wl,--wrap=malloc
-    -Wl,--wrap=calloc
-    -Wl,--wrap=realloc
-    -Wl,--wrap=free
-    -Wl,--wrap=malloc_usable_size
-  )
-endif()
+target_link_options(${PROJECT_NAME} PRIVATE
+  -Wl,--wrap=malloc
+  -Wl,--wrap=calloc
+  -Wl,--wrap=realloc
+  -Wl,--wrap=free
+  -Wl,--wrap=malloc_usable_size
+)
 
 # RP2040 keeps both stacks in scratch RAM. RP2350 needs more than the combined
 # scratch banks provide for Prism in debug builds, so core 0 uses regular RAM.
@@ -165,10 +161,13 @@ elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico2_w")
   pico_set_linker_script(${PROJECT_NAME} ${CMAKE_CURRENT_BINARY_DIR}/memmap_rp2350.ld)
 endif()
 
+# The newlib heap is not the crt0 .heap dummy section: ports/rp2040/main.c
+# overrides _sbrk and carves it out of the top of RAM, and the Ruby heap
+# takes all RAM between the end of .bss and that strip. So the dummy is 0.
 target_compile_definitions(${PROJECT_NAME} PRIVATE
   PICO_STACK_SIZE=${PICORB_STACK_SIZE}
   PICO_CORE1_STACK_SIZE=${PICORB_CORE1_STACK_SIZE}
-  PICO_HEAP_SIZE=0x0400        # 1KB
+  PICO_HEAP_SIZE=0
 )
 
 option(PICORUBY_PSG_MCP4922_DMA "Use DMA for PSG MCP4922 output" ON)
@@ -234,8 +233,11 @@ add_compile_definitions(PICORB_ALLOC_ALIGN=8)
 
 if(PICORB_VM_MRUBY)
   add_compile_definitions(PICORB_VM_MRUBY=1)
-  add_compile_definitions(MRB_INT64=1)
-  add_compile_definitions(MRB_NO_BOXING=1)
+  # Must match build_config/r2p2-picoruby-*.rb: these fix sizeof(mrb_value)
+  # and the mrb_state layout that the port sources share with libmruby. A
+  # mismatch boots into a HardFault in the first mrb_* call from main().
+  add_compile_definitions(MRB_INT32=1)
+  add_compile_definitions(MRB_WORD_BOXING=1)
   add_compile_definitions(MRB_32BIT=1)
   add_compile_definitions(MRB_UTF8_STRING=1)
   # Match the mruby core build (mruby-task adds this via spec.build.defines) so
@@ -243,6 +245,10 @@ if(PICORB_VM_MRUBY)
   # include <task.h>. The task field is last in mrb_state, so exposing it does
   # not shift any earlier field offsets.
   add_compile_definitions(MRB_USE_TASK_SCHEDULER=1)
+  # Same reason: mrb_state carries c_stack_limit behind this macro (after the
+  # task member), and main.c calls mrb_c_stack_limit_set, which is a no-op
+  # macro without it.
+  add_compile_definitions(MRB_USE_C_STACK_CHECK=1)
   target_include_directories(${PROJECT_NAME} PRIVATE
     ${PICORUBY_ROOT}/mrbgems/picoruby-mruby/lib/mruby/include
     ${PICORUBY_ROOT}/mrbgems/picoruby-mruby/lib/mruby/mrbgems/mruby-task/include
@@ -263,10 +269,12 @@ target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_BINARY_DIR}/mrb
   ${R2P2_GEM_DIR}/include
   ${PICORUBY_ROOT}/include
-  ${PICORUBY_ROOT}/mrbgems/mruby-compiler/lib/prism/include
-  # Prism's generated headers are written under build_root, not the submodule
-  ${PICORUBY_ROOT}/build/prism/include
   ${PICORUBY_ROOT}/mrbgems/mruby-compiler/include
+  # Prism's generated headers are written under build_root, not the submodule;
+  # before the submodule's include directory, which may hold older generated
+  # headers of its own.
+  ${PICORUBY_ROOT}/build/prism/include
+  ${PICORUBY_ROOT}/mrbgems/mruby-compiler/lib/prism/include
   ${PICORUBY_ROOT}/build/${MRUBY_CONFIG}/include
   ${PICORUBY_ROOT}/mrbgems/picoruby-socket/include
 

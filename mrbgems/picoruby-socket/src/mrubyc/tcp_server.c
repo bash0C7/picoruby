@@ -157,7 +157,6 @@ c_tcp_server_accept_nonblock(mrbc_vm *vm, mrbc_value *v, int argc)
   }
 #endif
 
-  mrbc_incref(&v[0]);
   SET_RETURN(client_obj);
 }
 
@@ -186,9 +185,28 @@ c_tcp_server_close(mrbc_vm *vm, mrbc_value *v, int argc)
   /* Clear the pointer */
   wrapper->ptr = NULL;
 
-  mrbc_incref(&v[0]);
   SET_NIL_RETURN();
 }
+
+/*
+ * server.closed? -> true or false
+ */
+static void
+c_tcp_server_closed_q(mrbc_vm *vm, mrbc_value *v, int argc)
+{
+  if (argc != 0) {
+    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
+    return;
+  }
+
+  tcp_server_wrapper_t *wrapper = (tcp_server_wrapper_t *)v[0].instance->data;
+  if (wrapper->ptr) {
+    SET_FALSE_RETURN();
+  } else {
+    SET_TRUE_RETURN();
+  }
+}
+
 static void
 mrbc_tcp_server_free(mrbc_value *self)
 {
@@ -207,4 +225,5 @@ tcp_server_init(mrbc_vm *vm, mrbc_class *class_BasicSocket)
   mrbc_define_method(vm, class_TCPServer, "new", c_tcp_server_new);
   mrbc_define_method(vm, class_TCPServer, "accept_nonblock", c_tcp_server_accept_nonblock);
   mrbc_define_method(vm, class_TCPServer, "close", c_tcp_server_close);
+  mrbc_define_method(vm, class_TCPServer, "closed?", c_tcp_server_closed_q);
 }

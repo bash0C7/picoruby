@@ -13,17 +13,36 @@ MRuby::Gem::Specification.new('picoruby-mruby') do |spec|
   end
   spec.add_dependency 'mruby-task', gemdir: "#{MRUBY_ROOT}/mrbgems/picoruby-mruby/lib/mruby/mrbgems/mruby-task"
 
-  build.cc.defines << "MRB_INT64"
-  build.cc.defines << "MRB_NO_BOXING"
+  # Default to a 64-bit mrb_int without boxing unless the build config has
+  # chosen both itself. The 32-bit targets pick MRB_INT32 with
+  # MRB_WORD_BOXING, and mrbconf.h rejects MRB_INT64 beside a boxing on
+  # a 32-bit build.
+  unless build.cc.defines.any? { |d| d =~ /\AMRB_INT(32|64)\z/ }
+    build.cc.defines << "MRB_INT64"
+  end
+  unless build.cc.defines.any? { |d| d =~ /\AMRB_(NO|WORD|NAN)_BOXING\z/ }
+    build.cc.defines << "MRB_NO_BOXING"
+  end
   build.cc.defines << "MRB_UTF8_STRING"
 
-  # MRB_BASELINE_PROFILE and MRB_CONSTRAINED_BASELINE_PROFILE define MRB_NO_METHOD_CACHE
-  # and it varies sizeof(mrb_state), so they should be build-wide define.
-  if spec.build.wasm? || spec.build.posix?
-    spec.build.defines << "MRB_BASELINE_PROFILE=1"
-  else
+  # The profile and the method cache size change sizeof(mrb_state), so
+  # they are build-wide defines.
+  spec.build.defines << "MRB_BASELINE_PROFILE=1"
+  unless spec.build.wasm? || spec.build.posix?
+    # A microcontroller build. mruby's own MRB_CONSTRAINED_BASELINE_PROFILE
+    # also turns the method cache off, and a pico2_w measurement (2026-10,
+    # R2P2 prod with AOT) showed the cache worth its RAM: a 64-entry cache
+    # (64 x 20 bytes in mrb_state) made the shell parser 10 to 12 percent
+    # faster, 256 entries gained 3 percent more for four times the RAM, and
+    # 32 entries missed so often that JSON.parse got slower than with no
+    # cache. So the build takes the baseline profile, sets the other two
+    # constrained values by hand, and sizes the cache at 64 unless the
+    # build config sets MRB_METHOD_CACHE_SIZE itself.
     spec.cc.defines << "MRB_HEAP_PAGE_SIZE=128"
-    spec.build.defines << "MRB_CONSTRAINED_BASELINE_PROFILE=1"
+    spec.build.defines << "KHASH_INITIAL_SIZE=16"
+    unless build.cc.defines.any? { |d| d =~ /\AMRB_METHOD_CACHE_SIZE=/ }
+      spec.build.defines << "MRB_METHOD_CACHE_SIZE=64"
+    end
   end
 
   dir_for_enhanced_rule = "lib/mruby/src"

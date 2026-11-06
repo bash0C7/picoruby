@@ -32,6 +32,10 @@ class Shell
       return false
     end
 
+    def poll_pending_suspend
+      @sandbox.poll_pending_suspend
+    end
+
     def state
       @sandbox.state
     end
@@ -51,6 +55,14 @@ class Shell
         i += 1
       end
       trap
+      # A 0-byte executable is a broken install (the system files are
+      # written at boot and a full filesystem leaves empty files behind).
+      # Sandbox#load_file would run it as an empty program and print
+      # nothing, so refuse it here with a message that names the file.
+      size = File.open(@exefile, "r") { |f| f.size }
+      if size == 0
+        raise "#{@exefile}: empty executable"
+      end
       before = task_ids
       begin
         @sandbox.load_file(@exefile)
@@ -83,7 +95,11 @@ class Shell
     # itself starves. A job that ends normally keeps its tasks, so a script
     # can still start a long-lived background worker on purpose.
     def reap(before)
-      Task.list.each do |t|
+      tasks = Task.list
+      i = 0
+      while i < tasks.size
+        t = tasks[i]
+        i += 1
         # Identity has to go through object_id: mruby/c compares two
         # objects of the same class as equal, so Array#include? on the
         # Task objects themselves would treat every task as "seen".
@@ -101,7 +117,12 @@ class Shell
     def task_ids
       # @type var ids: Array[Integer]
       ids = []
-      Task.list.each { |t| ids << t.object_id }
+      tasks = Task.list
+      i = 0
+      while i < tasks.size
+        ids << tasks[i].object_id
+        i += 1
+      end
       ids
     end
 

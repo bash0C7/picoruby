@@ -53,7 +53,7 @@ static const struct mrb_data_type picorb_match_data_type = {
 
 /* EM_JS functions */
 
-EM_JS(int, regexp_new, (const char *pattern, const char *flags), {
+EM_JS(int, regexp_new, (const char *pattern, int pattern_len, const char *flags), {
   try {
     var flagStr = UTF8ToString(flags);
     // Auto-add 'd' flag (ES2022) so result.indices is available for per-capture offsets.
@@ -61,7 +61,7 @@ EM_JS(int, regexp_new, (const char *pattern, const char *flags), {
     // Auto-add 'u' flag so '.', char classes and \p{...} operate on Unicode
     // code points -- mruby strings here are UTF-8 (MRB_UTF8_STRING).
     if (flagStr.indexOf('u') < 0) flagStr += 'u';
-    var re = new RegExp(UTF8ToString(pattern), flagStr);
+    var re = new RegExp(UTF8ToString(pattern, pattern_len, true), flagStr);
     return globalThis.picorubyRefs.push(re) - 1;
   } catch(e) {
     console.error('RegExp creation failed:', e);
@@ -73,7 +73,7 @@ EM_JS(int, regexp_test, (int ref_id, const char *str, int str_len), {
   try {
     var re = globalThis.picorubyRefs[ref_id];
     re.lastIndex = 0;
-    return re.test(UTF8ToString(str, str_len)) ? 1 : 0;
+    return re.test(UTF8ToString(str, str_len, true)) ? 1 : 0;
   } catch(e) {
     return 0;
   }
@@ -90,7 +90,7 @@ EM_JS(int, regexp_exec, (int ref_id, const char *str, int str_len, int base_byte
   try {
     var re = globalThis.picorubyRefs[ref_id];
     re.lastIndex = 0;
-    var jsStr = UTF8ToString(str, str_len);
+    var jsStr = UTF8ToString(str, str_len, true);
     var result = re.exec(jsStr);
     if (result === null) return -1;
 
@@ -166,7 +166,9 @@ EM_JS(int, regexp_match_char_end, (int ref_id, int idx), {
   return (e == null) ? -1 : e.charEnd;
 });
 
-EM_JS(char *, regexp_match_item, (int ref_id, int idx), {
+// The returned buffer may hold an embedded NUL, so the byte length goes to
+// *out_len and the caller must not read the text with strlen.
+EM_JS(char *, regexp_match_item, (int ref_id, int idx, int *out_len), {
   var info = globalThis.picorubyRefs[ref_id];
   var e = info.entries[idx];
   if (e == null) return 0;
@@ -175,6 +177,7 @@ EM_JS(char *, regexp_match_item, (int ref_id, int idx), {
   var len = lengthBytesUTF8(item) + 1;
   var ptr = _malloc(len);
   stringToUTF8(item, ptr, len);
+  HEAP32[out_len >> 2] = len - 1;
   return ptr;
 });
 
@@ -192,12 +195,14 @@ EM_JS(void, regexp_release_ref, (int ref_id), {
   }
 });
 
-EM_JS(char *, regexp_source, (int ref_id), {
+// The source may hold an embedded NUL, so the byte length goes to *out_len.
+EM_JS(char *, regexp_source, (int ref_id, int *out_len), {
   var re = globalThis.picorubyRefs[ref_id];
   var str = re.source;
   var len = lengthBytesUTF8(str) + 1;
   var ptr = _malloc(len);
   stringToUTF8(str, ptr, len);
+  HEAP32[out_len >> 2] = len - 1;
   return ptr;
 });
 
@@ -305,9 +310,9 @@ mrb_regexp_compile(mrb_state *mrb, mrb_value self)
   char js_flags[16];
   if (mrb_string_p(flags_val)) {
     build_js_flags(RSTRING_PTR(flags_val), RSTRING_LEN(flags_val), js_flags, sizeof(js_flags));
-  } else if (mrb_fixnum_p(flags_val)) {
+  } else if (mrb_integer_p(flags_val)) {
     /* Integer flags: IGNORECASE=1, EXTENDED=2, MULTILINE=4 */
-    mrb_int opts = mrb_fixnum(flags_val);
+    mrb_int opts = mrb_integer(flags_val);
     char ruby_flags[4];
     int k = 0;
     if (opts & 1) ruby_flags[k++] = 'i';
@@ -318,13 +323,7 @@ mrb_regexp_compile(mrb_state *mrb, mrb_value self)
     build_js_flags("", 0, js_flags, sizeof(js_flags));
   }
 
-  /* Create a null-terminated pattern string */
-  char *pat_cstr = (char *)mrb_malloc(mrb, pattern_len + 1);
-  memcpy(pat_cstr, pattern, pattern_len);
-  pat_cstr[pattern_len] = '\0';
-
-  int ref_id = regexp_new(pat_cstr, js_flags);
-  mrb_free(mrb, pat_cstr);
+  int ref_id = regexp_new(pattern, (int)pattern_len, js_flags);
 
   if (ref_id < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid regular expression");
@@ -431,7 +430,7 @@ mrb_regexp_match_op(mrb_state *mrb, mrb_value self)
   }
 
   int idx = regexp_match_char_begin(match_ref, 0);
-  return mrb_fixnum_value(idx);
+  return mrb_int_value(mrb, idx);
 }
 
 /* Regexp#source -> String */
@@ -443,9 +442,10 @@ mrb_regexp_source(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_RUNTIME_ERROR, "Regexp not initialized");
   }
 
-  char *src = regexp_source(re->ref_id);
+  int src_len = 0;
+  char *src = regexp_source(re->ref_id, &src_len);
   if (!src) return mrb_str_new_lit(mrb, "");
-  mrb_value str = mrb_str_new_cstr(mrb, src);
+  mrb_value str = mrb_str_new(mrb, src, src_len);
   free(src);
   return str;
 }
@@ -459,7 +459,8 @@ mrb_regexp_to_s(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_RUNTIME_ERROR, "Regexp not initialized");
   }
 
-  char *src = regexp_source(re->ref_id);
+  int src_len = 0;
+  char *src = regexp_source(re->ref_id, &src_len);
   char *flags = regexp_flags(re->ref_id);
   if (!src) src = strdup("");
   if (!flags) flags = strdup("");
@@ -483,7 +484,7 @@ mrb_regexp_to_s(mrb_state *mrb, mrb_value self)
   mrb_value result = mrb_str_new_lit(mrb, "(?");
   mrb_str_cat_cstr(mrb, result, ruby_flags);
   mrb_str_cat_lit(mrb, result, ":");
-  mrb_str_cat_cstr(mrb, result, src);
+  mrb_str_cat(mrb, result, src, src_len);
   mrb_str_cat_lit(mrb, result, ")");
 
   free(src);
@@ -500,7 +501,8 @@ mrb_regexp_inspect(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_RUNTIME_ERROR, "Regexp not initialized");
   }
 
-  char *src = regexp_source(re->ref_id);
+  int src_len = 0;
+  char *src = regexp_source(re->ref_id, &src_len);
   char *flags = regexp_flags(re->ref_id);
   if (!src) src = strdup("");
   if (!flags) flags = strdup("");
@@ -519,7 +521,7 @@ mrb_regexp_inspect(mrb_state *mrb, mrb_value self)
   ruby_flags[j] = '\0';
 
   mrb_value result = mrb_str_new_lit(mrb, "/");
-  mrb_str_cat_cstr(mrb, result, src);
+  mrb_str_cat(mrb, result, src, src_len);
   mrb_str_cat_lit(mrb, result, "/");
   mrb_str_cat_cstr(mrb, result, ruby_flags);
 
@@ -560,7 +562,7 @@ mrb_regexp_options(mrb_state *mrb, mrb_value self)
   }
 
   char *flags = regexp_flags(re->ref_id);
-  if (!flags) return mrb_fixnum_value(0);
+  if (!flags) return mrb_int_value(mrb, 0);
 
   int opts = 0;
   size_t i = 0;
@@ -573,7 +575,7 @@ mrb_regexp_options(mrb_state *mrb, mrb_value self)
     i++;
   }
   free(flags);
-  return mrb_fixnum_value(opts);
+  return mrb_int_value(mrb, opts);
 }
 
 /* ---- MatchData class methods ---- */
@@ -598,9 +600,10 @@ mrb_match_data_aref(mrb_state *mrb, mrb_value self)
     return mrb_nil_value();
   }
 
-  char *item = regexp_match_item(md->ref_id, (int)idx);
+  int item_len = 0;
+  char *item = regexp_match_item(md->ref_id, (int)idx, &item_len);
   if (!item) return mrb_nil_value();
-  mrb_value str = mrb_str_new_cstr(mrb, item);
+  mrb_value str = mrb_str_new(mrb, item, item_len);
   free(item);
   return str;
 }
@@ -622,9 +625,10 @@ mrb_match_data_to_a(mrb_state *mrb, mrb_value self)
     if (regexp_match_item_is_undefined(md->ref_id, i)) {
       mrb_ary_push(mrb, ary, mrb_nil_value());
     } else {
-      char *item = regexp_match_item(md->ref_id, i);
+      int item_len = 0;
+      char *item = regexp_match_item(md->ref_id, i, &item_len);
       if (item) {
-        mrb_ary_push(mrb, ary, mrb_str_new_cstr(mrb, item));
+        mrb_ary_push(mrb, ary, mrb_str_new(mrb, item, item_len));
         free(item);
       } else {
         mrb_ary_push(mrb, ary, mrb_nil_value());
@@ -644,7 +648,7 @@ mrb_match_data_length(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_RUNTIME_ERROR, "MatchData not initialized");
   }
 
-  return mrb_fixnum_value(regexp_match_length(md->ref_id));
+  return mrb_int_value(mrb, regexp_match_length(md->ref_id));
 }
 
 /* MatchData#string -> String (frozen) */
@@ -714,7 +718,7 @@ mrb_match_data_begin(mrb_state *mrb, mrb_value self)
 
   int char_begin = regexp_match_char_begin(md->ref_id, (int)idx);
   if (char_begin < 0) return mrb_nil_value();
-  return mrb_fixnum_value(char_begin);
+  return mrb_int_value(mrb, char_begin);
 }
 
 /* MatchData#end(idx) -> Integer (character offset) */
@@ -731,7 +735,7 @@ mrb_match_data_end(mrb_state *mrb, mrb_value self)
 
   int char_end = regexp_match_char_end(md->ref_id, (int)idx);
   if (char_end < 0) return mrb_nil_value();
-  return mrb_fixnum_value(char_end);
+  return mrb_int_value(mrb, char_end);
 }
 
 /* MatchData#captures -> Array (excluding [0]) */
@@ -751,9 +755,10 @@ mrb_match_data_captures(mrb_state *mrb, mrb_value self)
     if (regexp_match_item_is_undefined(md->ref_id, i)) {
       mrb_ary_push(mrb, ary, mrb_nil_value());
     } else {
-      char *item = regexp_match_item(md->ref_id, i);
+      int item_len = 0;
+      char *item = regexp_match_item(md->ref_id, i, &item_len);
       if (item) {
-        mrb_ary_push(mrb, ary, mrb_str_new_cstr(mrb, item));
+        mrb_ary_push(mrb, ary, mrb_str_new(mrb, item, item_len));
         free(item);
       } else {
         mrb_ary_push(mrb, ary, mrb_nil_value());
@@ -773,9 +778,10 @@ mrb_match_data_to_s(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_RUNTIME_ERROR, "MatchData not initialized");
   }
 
-  char *item = regexp_match_item(md->ref_id, 0);
+  int item_len = 0;
+  char *item = regexp_match_item(md->ref_id, 0, &item_len);
   if (!item) return mrb_str_new_lit(mrb, "");
-  mrb_value str = mrb_str_new_cstr(mrb, item);
+  mrb_value str = mrb_str_new(mrb, item, item_len);
   free(item);
   return str;
 }
@@ -805,10 +811,11 @@ mrb_match_data_inspect(mrb_state *mrb, mrb_value self)
     if (regexp_match_item_is_undefined(md->ref_id, i)) {
       mrb_str_cat_lit(mrb, result, "nil");
     } else {
-      char *item = regexp_match_item(md->ref_id, i);
+      int item_len = 0;
+      char *item = regexp_match_item(md->ref_id, i, &item_len);
       if (item) {
         mrb_str_cat_lit(mrb, result, "\"");
-        mrb_str_cat_cstr(mrb, result, item);
+        mrb_str_cat(mrb, result, item, item_len);
         mrb_str_cat_lit(mrb, result, "\"");
         free(item);
       } else {
@@ -834,7 +841,7 @@ ensure_regexp(mrb_state *mrb, mrb_value pattern)
     /* Create Regexp from string */
     char js_flags[16];
     build_js_flags("", 0, js_flags, sizeof(js_flags));
-    int ref_id = regexp_new(RSTRING_PTR(pattern), js_flags);
+    int ref_id = regexp_new(RSTRING_PTR(pattern), RSTRING_LEN(pattern), js_flags);
     if (ref_id < 0) {
       mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid regular expression");
     }
@@ -920,7 +927,7 @@ mrb_string_match_op(mrb_state *mrb, mrb_value self)
   }
 
   int idx = regexp_match_char_begin(match_ref, 0);
-  return mrb_fixnum_value(idx);
+  return mrb_int_value(mrb, idx);
 }
 
 /* Helper: width in bytes of the UTF-8 character starting at byte_pos. */
@@ -942,9 +949,10 @@ static void
 append_match_item(mrb_state *mrb, mrb_value result, int match_ref, int capture_idx)
 {
   if (regexp_match_item_is_undefined(match_ref, capture_idx)) return;
-  char *item = regexp_match_item(match_ref, capture_idx);
+  int item_len = 0;
+  char *item = regexp_match_item(match_ref, capture_idx, &item_len);
   if (!item) return;
-  mrb_str_cat_cstr(mrb, result, item);
+  mrb_str_cat(mrb, result, item, item_len);
   free(item);
 }
 
@@ -1171,8 +1179,9 @@ do_string_sub_gsub(mrb_state *mrb, mrb_value self, mrb_bool global)
 
     /* Compute and append the replacement text. */
     if (has_block) {
-      char *full = regexp_match_item(match_ref, 0);
-      mrb_value full_str = mrb_str_new_cstr(mrb, full ? full : "");
+      int full_len = 0;
+      char *full = regexp_match_item(match_ref, 0, &full_len);
+      mrb_value full_str = full ? mrb_str_new(mrb, full, full_len) : mrb_str_new_lit(mrb, "");
       if (full) free(full);
       regexp_release_ref(match_ref);
       match_ref = -1;
@@ -1183,8 +1192,9 @@ do_string_sub_gsub(mrb_state *mrb, mrb_value self, mrb_bool global)
       }
       mrb_str_cat_str(mrb, result, yield_str);
     } else if (has_hash_replacement) {
-      char *full = regexp_match_item(match_ref, 0);
-      mrb_value full_str = mrb_str_new_cstr(mrb, full ? full : "");
+      int full_len = 0;
+      char *full = regexp_match_item(match_ref, 0, &full_len);
+      mrb_value full_str = full ? mrb_str_new(mrb, full, full_len) : mrb_str_new_lit(mrb, "");
       if (full) free(full);
       mrb_value hash_value = mrb_hash_get(mrb, replacement, full_str);
       if (!mrb_str_equal(mrb, self, source)) {
@@ -1269,9 +1279,9 @@ mrb_regexp_init(mrb_state *mrb)
   mrb_define_method_id(mrb, class_Regexp, MRB_SYM_Q(casefold), mrb_regexp_casefold_p, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, class_Regexp, MRB_SYM(options), mrb_regexp_options, MRB_ARGS_NONE());
 
-  mrb_define_const_id(mrb, class_Regexp, MRB_SYM(IGNORECASE), mrb_fixnum_value(1));
-  mrb_define_const_id(mrb, class_Regexp, MRB_SYM(EXTENDED), mrb_fixnum_value(2));
-  mrb_define_const_id(mrb, class_Regexp, MRB_SYM(MULTILINE), mrb_fixnum_value(4));
+  mrb_define_const_id(mrb, class_Regexp, MRB_SYM(IGNORECASE), mrb_int_value(mrb, 1));
+  mrb_define_const_id(mrb, class_Regexp, MRB_SYM(EXTENDED), mrb_int_value(mrb, 2));
+  mrb_define_const_id(mrb, class_Regexp, MRB_SYM(MULTILINE), mrb_int_value(mrb, 4));
 
   /* MatchData class */
   class_MatchData = mrb_define_class_id(mrb, MRB_SYM(MatchData), mrb->object_class);
