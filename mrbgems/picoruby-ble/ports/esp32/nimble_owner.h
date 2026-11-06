@@ -50,6 +50,33 @@ void picoruby_nimble_halting_watchdog_stop(void);
 void picoruby_nimble_pump(void);
 void picoruby_nimble_attach_vm(void *vm);
 
+typedef enum {
+  PICORUBY_LOG_ATT_GATE,
+  PICORUBY_LOG_ATT_NO_LINK,
+  PICORUBY_LOG_ATT_NO_MAP,
+  PICORUBY_LOG_ATT_SECURITY_LINK,
+  PICORUBY_LOG_READ_APPEND,
+  PICORUBY_LOG_WRITE_SIZE,
+  PICORUBY_LOG_WRITE_COPY,
+  PICORUBY_LOG_LATE_TERMINATE,
+  PICORUBY_LOG_ADV_REPORT,
+  PICORUBY_LOG_NOTIFY_RX,
+  PICORUBY_LOG_ENC_CHANGE,
+  PICORUBY_LOG_BOND_READ,
+  PICORUBY_LOG_REPEAT_PAIRING,
+  PICORUBY_LOG_ADV_START,
+  PICORUBY_LOG_NOTIFY,
+  PICORUBY_LOG_EVENT_QUEUE,
+  PICORUBY_LOG_EVENT_NOT_READY,
+  PICORUBY_LOG_WRITE_QUEUE,
+  PICORUBY_LOG_CCCD_REPLACED,
+  PICORUBY_LOG_WRITE_DELIVERY,
+  PICORUBY_LOG_SITE_COUNT,
+} picoruby_log_site_t;
+
+bool picoruby_log_due(picoruby_log_site_t site, uint32_t *suppressed);
+void picoruby_log_flush(void);
+
 #ifdef __cplusplus
 }
 #endif

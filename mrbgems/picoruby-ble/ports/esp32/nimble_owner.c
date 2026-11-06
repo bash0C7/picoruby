@@ -69,7 +69,6 @@ static int evq_head = 0;
 static int evq_count = 0;
 static uint32_t evq_gen = 0;
 static uint32_t evq_dropped = 0;
-static bool evq_full_logged = false;
 static portMUX_TYPE evq_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t control_fault;
 
@@ -91,8 +90,6 @@ static int wrq_cccd_reserved = 0;
 static int wrq_cccd_queued = 0;
 static uint32_t wrq_generation = 0;
 static uint32_t wrq_dropped = 0;
-static bool wrq_drop_logged = false;
-static bool wrq_deliver_failed_logged = false;
 static portMUX_TYPE wrq_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static bool started = false;
@@ -111,6 +108,69 @@ static esp_timer_handle_t heartbeat_timer = NULL;
 static esp_timer_handle_t halting_timer = NULL;
 static int heartbeat_depth = 0;
 static bool heartbeat_pending = false;
+
+#define LOG_LIMIT_INTERVAL_US 1000000
+static portMUX_TYPE log_limit_mux = portMUX_INITIALIZER_UNLOCKED;
+static int64_t log_next_us[PICORUBY_LOG_SITE_COUNT];
+static uint32_t log_suppressed[PICORUBY_LOG_SITE_COUNT];
+static const char *const log_site_name[PICORUBY_LOG_SITE_COUNT] = {
+  "ATT access without connection gate",
+  "ATT access without matching connection",
+  "ATT access without attribute map",
+  "ATT security check without connection",
+  "read response append failure",
+  "write exceeding capacity",
+  "write mbuf copy failure",
+  "late connection termination failure",
+  "advertising report over 31 bytes",
+  "notification receive failure",
+  "encryption change failure",
+  "bond read failure",
+  "repeat pairing ignored",
+  "advertising start failure",
+  "notify failure",
+  "event queue full",
+  "event dropped, queue not ready",
+  "write queue full",
+  "CCCD value replaced before delivery",
+  "write delivery failure",
+};
+
+bool
+picoruby_log_due(picoruby_log_site_t site, uint32_t *suppressed)
+{
+  int64_t now = esp_timer_get_time();
+  taskENTER_CRITICAL(&log_limit_mux);
+  if (now < log_next_us[site]) {
+    log_suppressed[site]++;
+    taskEXIT_CRITICAL(&log_limit_mux);
+    return false;
+  }
+  *suppressed = log_suppressed[site];
+  log_suppressed[site] = 0;
+  log_next_us[site] = now + LOG_LIMIT_INTERVAL_US;
+  taskEXIT_CRITICAL(&log_limit_mux);
+  return true;
+}
+
+void
+picoruby_log_flush(void)
+{
+  int64_t now = esp_timer_get_time();
+  for (int site = 0; site < PICORUBY_LOG_SITE_COUNT; site++) {
+    uint32_t n = 0;
+    taskENTER_CRITICAL(&log_limit_mux);
+    if (log_suppressed[site] > 0 && now >= log_next_us[site]) {
+      n = log_suppressed[site];
+      log_suppressed[site] = 0;
+      log_next_us[site] = now + LOG_LIMIT_INTERVAL_US;
+    }
+    taskEXIT_CRITICAL(&log_limit_mux);
+    if (n > 0) {
+      ESP_LOGW(TAG, "%s: %lu more suppressed", log_site_name[site], (unsigned long)n);
+    }
+  }
+}
 
 void
 picoruby_nimble_cancel_control(uint8_t reason)
@@ -164,23 +224,25 @@ picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_
   taskENTER_CRITICAL(&evq_mux);
   if (evq == NULL) {
     taskEXIT_CRITICAL(&evq_mux);
-    ESP_LOGW(TAG, "event dropped, queue not ready: len=%u", (unsigned)len);
+    uint32_t s;
+    if (picoruby_log_due(PICORUBY_LOG_EVENT_NOT_READY, &s)) {
+      ESP_LOGW(TAG, "event dropped, queue not ready: len=%u (%lu suppressed)",
+               (unsigned)len, (unsigned long)s);
+    }
     return PICORUBY_NIMBLE_EVENT_NOT_READY;
   }
   int limit = event_class == PICORUBY_NIMBLE_EVENT_CONTROL ? EVQ_DEPTH : EVQ_DATA_DEPTH;
   if (evq_count >= limit) {
     evq_dropped++;
-    bool first = !evq_full_logged;
-    evq_full_logged = true;
     uint32_t dropped = evq_dropped;
     taskEXIT_CRITICAL(&evq_mux);
-    if (first) {
-      ESP_LOGW(TAG, "event queue full (limit=%d), dropping newest; total dropped=%lu",
-               limit, (unsigned long)dropped);
+    uint32_t s;
+    if (picoruby_log_due(PICORUBY_LOG_EVENT_QUEUE, &s)) {
+      ESP_LOGW(TAG, "event queue full (limit=%d), dropping newest; total dropped=%lu (%lu suppressed)",
+               limit, (unsigned long)dropped, (unsigned long)s);
     }
     return PICORUBY_NIMBLE_EVENT_FULL;
   }
-  if (evq_count == 0) evq_full_logged = false;
   int slot = (evq_head + evq_count) % EVQ_DEPTH;
   evq[slot].len = len;
   memcpy(evq[slot].data, pkt, len);
@@ -217,22 +279,25 @@ wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
       wrq[slot].len = len;
       memcpy(wrq[slot].data, data, len);
       taskEXIT_CRITICAL(&wrq_mux);
+      uint32_t s;
+      if (picoruby_log_due(PICORUBY_LOG_CCCD_REPLACED, &s)) {
+        ESP_LOGW(TAG, "CCCD value for handle %u replaced before delivery (%lu suppressed)",
+                 (unsigned)ruby_handle, (unsigned long)s);
+      }
       return 0;
     }
   }
   if (cccd ? wrq_count >= WRQ_DEPTH : wrq_count - wrq_cccd_queued >= WRQ_DEPTH - wrq_cccd_reserved) {
     wrq_dropped++;
-    bool first = !wrq_drop_logged;
-    wrq_drop_logged = true;
     uint32_t dropped = wrq_dropped;
     taskEXIT_CRITICAL(&wrq_mux);
-    if (first) {
-      ESP_LOGW(TAG, "write queue full (depth=%d), dropping; total dropped=%lu",
-               WRQ_DEPTH, (unsigned long)dropped);
+    uint32_t s;
+    if (picoruby_log_due(PICORUBY_LOG_WRITE_QUEUE, &s)) {
+      ESP_LOGW(TAG, "write queue full (depth=%d), dropping; total dropped=%lu (%lu suppressed)",
+               WRQ_DEPTH, (unsigned long)dropped, (unsigned long)s);
     }
     return -1;
   }
-  if (wrq_count == 0) wrq_drop_logged = false;
   int slot = 0;
   while (wrq[slot].occupied) slot++;
   wrq[slot].occupied = true;
@@ -280,7 +345,6 @@ picoruby_nimble_reset_writes(void)
   wrq_count = 0;
   wrq_cccd_queued = 0;
   for (int i = 0; i < WRQ_DEPTH; i++) wrq[i].occupied = false;
-  wrq_drop_logged = false;
   taskEXIT_CRITICAL(&wrq_mux);
 }
 
@@ -333,14 +397,13 @@ drain_writes(void)
     ring_generation = wrq_generation;
     taskEXIT_CRITICAL(&wrq_mux);
     if (BLE_write_data(handle, buf, len) != 0) {
-      if (!wrq_deliver_failed_logged) {
-        wrq_deliver_failed_logged = true;
-        ESP_LOGW(TAG, "write delivery to the VM failed: handle=%u len=%u",
-                 (unsigned)handle, (unsigned)len);
+      uint32_t s;
+      if (picoruby_log_due(PICORUBY_LOG_WRITE_DELIVERY, &s)) {
+        ESP_LOGW(TAG, "write delivery to the VM failed: handle=%u len=%u (%lu suppressed)",
+                 (unsigned)handle, (unsigned)len, (unsigned long)s);
       }
       return;
     }
-    wrq_deliver_failed_logged = false;
     taskENTER_CRITICAL(&wrq_mux);
     if (wrq_generation == ring_generation && wrq_head == slot && wrq[slot].occupied &&
         wrq[slot].generation == slot_generation) {
@@ -387,6 +450,7 @@ picoruby_nimble_halting_watchdog_stop(void)
 void
 picoruby_nimble_pump(void)
 {
+  picoruby_log_flush();
   picoruby_ble_refresh_read_mirrors();
   picoruby_ble_peripheral_service_send_permit();
   drain_events();
@@ -552,8 +616,14 @@ stop_host(bool issue_stop, bool done_seen)
     picoruby_ble_connection_close();
     heartbeat_force_stop();
     picoruby_nimble_halting_watchdog_stop();
-    ble_gap_adv_stop();
-    ble_gap_disc_cancel();
+    int adv_rc = ble_gap_adv_stop();
+    if (adv_rc != 0 && adv_rc != BLE_HS_EALREADY) {
+      ESP_LOGW(TAG, "advertising stop at host stop failed: %d", adv_rc);
+    }
+    int scan_rc = ble_gap_disc_cancel();
+    if (scan_rc != 0 && scan_rc != BLE_HS_EALREADY) {
+      ESP_LOGW(TAG, "scan cancel at host stop failed: %d", scan_rc);
+    }
     int rc = nimble_port_stop();
     if (rc != 0) {
       taskENTER_CRITICAL(&owner_state_mux);

@@ -38,6 +38,13 @@ BLE_central_set_scan_params(uint8_t scan_type, uint16_t scan_interval, uint16_t 
 
 static bool scan_wanted;
 
+static void
+scan_cancel(void)
+{
+  int rc = ble_gap_disc_cancel();
+  if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGW(BLE_TAG, "scan cancel failed: %d", rc);
+}
+
 static int
 scan_start(void)
 {
@@ -92,7 +99,7 @@ void
 picoruby_ble_central_suspend_scan(void)
 {
   if (!ble_hs_is_enabled()) return;
-  ble_gap_disc_cancel();
+  scan_cancel();
 }
 
 void
@@ -107,7 +114,7 @@ void
 picoruby_ble_central_resume_scan(void)
 {
   if (!scan_wanted || picoruby_ble_connection_connect_pending()) return;
-  ble_gap_disc_cancel();
+  scan_cancel();
   scan_restart();
 }
 
@@ -142,7 +149,7 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
     return 0;
   }
   if (ble_gap_disc_active()) {
-    ble_gap_disc_cancel();
+    scan_cancel();
   }
   central_connect_peer = peer;
 

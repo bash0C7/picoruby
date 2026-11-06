@@ -273,7 +273,10 @@ peripheral_adopt(uint16_t handle)
       terminating_discard(handle);
       known_link_add(handle);
     } else if (rc != BLE_HS_ENOTCONN) {
-      ESP_LOGE(BLE_TAG, "late connection termination failed: %d", rc);
+      uint32_t s;
+      if (picoruby_log_due(PICORUBY_LOG_LATE_TERMINATE, &s)) {
+        ESP_LOGE(BLE_TAG, "late connection termination failed: %d (%lu suppressed)", rc, (unsigned long)s);
+      }
       picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
     }
     return;
@@ -287,22 +290,29 @@ peripheral_adopt(uint16_t handle)
 static int
 gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
+  uint32_t s;
   if (!picoruby_ble_connection_gate_enter()) {
-    ESP_LOGW(BLE_TAG, "ATT access rejected: connection gate unavailable");
+    if (picoruby_log_due(PICORUBY_LOG_ATT_GATE, &s)) {
+      ESP_LOGW(BLE_TAG, "ATT access rejected: connection gate unavailable (%lu suppressed)", (unsigned long)s);
+    }
     return BLE_ATT_ERR_UNLIKELY;
   }
   peripheral_adopt(conn);
   bool matching = picoruby_ble_connection_matches(conn);
   picoruby_ble_connection_gate_exit();
   if (!matching) {
-    ESP_LOGW(BLE_TAG, "ATT access rejected: no matching connection: conn=%u handle=%u op=%u",
-             (unsigned)conn, (unsigned)attr_handle, (unsigned)ctxt->op);
+    if (picoruby_log_due(PICORUBY_LOG_ATT_NO_LINK, &s)) {
+      ESP_LOGW(BLE_TAG, "ATT access rejected: no matching connection: conn=%u handle=%u op=%u (%lu suppressed)",
+               (unsigned)conn, (unsigned)attr_handle, (unsigned)ctxt->op, (unsigned long)s);
+    }
     return BLE_ATT_ERR_UNLIKELY;
   }
   attr_map_t *e = (attr_map_t *)arg;
   if (e == NULL) {
-    ESP_LOGW(BLE_TAG, "ATT access rejected: no attribute map: handle=%u op=%u",
-             (unsigned)attr_handle, (unsigned)ctxt->op);
+    if (picoruby_log_due(PICORUBY_LOG_ATT_NO_MAP, &s)) {
+      ESP_LOGW(BLE_TAG, "ATT access rejected: no attribute map: handle=%u op=%u (%lu suppressed)",
+               (unsigned)attr_handle, (unsigned)ctxt->op, (unsigned long)s);
+    }
     return BLE_ATT_ERR_UNLIKELY;
   }
 
@@ -336,8 +346,10 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
       }
       if (data == NULL || len == 0) return 0;
       if (os_mbuf_append(ctxt->om, data, len) == 0) return 0;
-      ESP_LOGW(BLE_TAG, "read response append failed: handle=%u len=%u",
-               (unsigned)e->ruby_handle, (unsigned)len);
+      if (picoruby_log_due(PICORUBY_LOG_READ_APPEND, &s)) {
+        ESP_LOGW(BLE_TAG, "read response append failed: handle=%u len=%u (%lu suppressed)",
+                 (unsigned)e->ruby_handle, (unsigned)len, (unsigned long)s);
+      }
       return BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
@@ -352,12 +364,17 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
       uint16_t out_len = 0;
       if (OS_MBUF_PKTLEN(ctxt->om) == 0) return 0;
       if (OS_MBUF_PKTLEN(ctxt->om) > sizeof(buf)) {
-        ESP_LOGW(BLE_TAG, "write exceeds capacity: handle=%u len=%u",
-                 (unsigned)e->ruby_handle, (unsigned)OS_MBUF_PKTLEN(ctxt->om));
+        if (picoruby_log_due(PICORUBY_LOG_WRITE_SIZE, &s)) {
+          ESP_LOGW(BLE_TAG, "write exceeds capacity: handle=%u len=%u (%lu suppressed)",
+                   (unsigned)e->ruby_handle, (unsigned)OS_MBUF_PKTLEN(ctxt->om), (unsigned long)s);
+        }
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
       }
       if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len) != 0) {
-        ESP_LOGW(BLE_TAG, "write mbuf copy failed: handle=%u", (unsigned)e->ruby_handle);
+        if (picoruby_log_due(PICORUBY_LOG_WRITE_COPY, &s)) {
+          ESP_LOGW(BLE_TAG, "write mbuf copy failed: handle=%u (%lu suppressed)",
+                   (unsigned)e->ruby_handle, (unsigned long)s);
+        }
         return BLE_ATT_ERR_UNLIKELY;
       }
       if (picoruby_nimble_enqueue_write(e->ruby_handle, buf, out_len) != 0) {
@@ -462,7 +479,14 @@ att_security_status(uint16_t flags, bool is_read, uint16_t conn)
   unsigned level = is_read ? profile_read_level(flags) : profile_write_level(flags);
   if (level == 0) return 0;
   struct ble_gap_conn_desc desc;
-  if (ble_gap_conn_find(conn, &desc) != 0) return BLE_ATT_ERR_UNLIKELY;
+  if (ble_gap_conn_find(conn, &desc) != 0) {
+    uint32_t s;
+    if (picoruby_log_due(PICORUBY_LOG_ATT_SECURITY_LINK, &s)) {
+      ESP_LOGW(BLE_TAG, "ATT security check without connection: conn=%u (%lu suppressed)",
+               (unsigned)conn, (unsigned long)s);
+    }
+    return BLE_ATT_ERR_UNLIKELY;
+  }
   uint8_t key_required = profile_min_key_size(flags);
   uint8_t key_size = desc.sec_state.encrypted ? desc.sec_state.key_size : 0;
   bool sc_missing = (flags & (is_read ? BLOB_FLAG_READ_SC : BLOB_FLAG_WRITE_SC)) &&
@@ -1005,11 +1029,13 @@ synth_query_complete(uint16_t conn, uint8_t status)
 }
 
 static uint8_t
-status_to_u8(uint16_t status)
+hci_code(int rc)
 {
-  if (status == 0 || status == BLE_HS_EDONE) return 0;
-  if (status < BLE_HS_ERR_ATT_BASE) return picoruby_ble_request_status(status);
-  return (status & 0xff) ? (uint8_t)status : 0xff;
+  if (rc == 0) return 0;
+  if (rc > BLE_HS_ERR_HCI_BASE && rc < BLE_HS_ERR_L2C_BASE) return (uint8_t)(rc - BLE_HS_ERR_HCI_BASE);
+  uint8_t code = picoruby_ble_status_code(rc);
+  ESP_LOGW(BLE_TAG, "NimBLE status %d has no HCI code; reported as 0x%02x", rc, (unsigned)code);
+  return code;
 }
 
 static void
@@ -1060,7 +1086,11 @@ static void
 synth_advertising_report(const struct ble_gap_disc_desc *d)
 {
   if (d->length_data > 31) {
-    ESP_LOGW(BLE_TAG, "advertising report exceeds 31 bytes: %u", (unsigned)d->length_data);
+    uint32_t s;
+    if (picoruby_log_due(PICORUBY_LOG_ADV_REPORT, &s)) {
+      ESP_LOGW(BLE_TAG, "advertising report exceeds 31 bytes: %u (%lu suppressed)",
+               (unsigned)d->length_data, (unsigned long)s);
+    }
     return;
   }
   uint8_t p[14 + 31];
@@ -1143,7 +1173,10 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           build_le_connection_complete(central_connect_event, event->connect.conn_handle, 0,
                                        ble_gap_conn_find(event->connect.conn_handle, &desc) == 0 ? &desc : NULL);
           central_connect_token = ++central_connect_serial;
-          if (ble_gattc_exchange_mtu(event->connect.conn_handle, central_mtu_cb, (void *)central_connect_token) != 0) {
+          int mtu_rc = ble_gattc_exchange_mtu(event->connect.conn_handle, central_mtu_cb, (void *)central_connect_token);
+          if (mtu_rc != 0) {
+            ESP_LOGW(BLE_TAG, "MTU exchange request failed: conn=%u rc=%d",
+                     (unsigned)event->connect.conn_handle, mtu_rc);
             central_connect_token = 0;
             enqueue_control_event(central_connect_event, sizeof(central_connect_event));
           }
@@ -1155,8 +1188,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         if (was_pending && event->connect.status == BLE_HS_EAPP) {
           synth_disconnection_complete(0xffff, BLE_ERR_CONN_TERM_LOCAL);
         } else if (was_pending) {
-          uint8_t status = (uint8_t)event->connect.status;
-          synth_le_connection_complete(0, status ? status : 0xff);
+          synth_le_connection_complete(0, hci_code(event->connect.status));
         }
         picoruby_ble_central_resume_after_connect();
       } else if (role == BLE_ROLE_PERIPHERAL) {
@@ -1182,7 +1214,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           build_le_connection_complete(p, event->disconnect.conn.conn_handle, 0, &event->disconnect.conn);
           enqueue_control_event(p, sizeof(p));
           synth_disconnection_complete(event->disconnect.conn.conn_handle,
-                                       (uint8_t)event->disconnect.reason);
+                                       hci_code(event->disconnect.reason));
           picoruby_ble_central_resume_after_connect();
         }
         break;
@@ -1191,7 +1223,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       picoruby_ble_central_reset_request();
       if (role == BLE_ROLE_PERIPHERAL || role == BLE_ROLE_CENTRAL) {
         synth_disconnection_complete(event->disconnect.conn.conn_handle,
-                                     (uint8_t)event->disconnect.reason);
+                                     hci_code(event->disconnect.reason));
       }
       if (role == BLE_ROLE_PERIPHERAL) {
         picoruby_ble_peripheral_rearm_adv();
@@ -1223,8 +1255,11 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
     }
     case BLE_GAP_EVENT_ENC_CHANGE:
       if (event->enc_change.status != 0) {
-        ESP_LOGW(BLE_TAG, "encryption change failed: conn=%u status=%d",
-                 (unsigned)event->enc_change.conn_handle, event->enc_change.status);
+        uint32_t s;
+        if (picoruby_log_due(PICORUBY_LOG_ENC_CHANGE, &s)) {
+          ESP_LOGW(BLE_TAG, "encryption change failed: conn=%u status=%d (%lu suppressed)",
+                   (unsigned)event->enc_change.conn_handle, event->enc_change.status, (unsigned long)s);
+        }
       }
       peripheral_adopt(event->enc_change.conn_handle);
       if (picoruby_ble_connection_matches(event->enc_change.conn_handle)) {
@@ -1233,7 +1268,15 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         if (event->enc_change.status == 0 && ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
           struct ble_store_key_sec key = { .peer_addr = desc.peer_id_addr };
           struct ble_store_value_sec bond;
-          conn_sc = ble_store_read_peer_sec(&key, &bond) == 0 && bond.ltk_present && bond.sc;
+          int bond_rc = ble_store_read_peer_sec(&key, &bond);
+          conn_sc = bond_rc == 0 && bond.ltk_present && bond.sc;
+          if (bond_rc != 0 && bond_rc != BLE_HS_ENOENT) {
+            uint32_t s;
+            if (picoruby_log_due(PICORUBY_LOG_BOND_READ, &s)) {
+              ESP_LOGW(BLE_TAG, "bond read failed: conn=%u rc=%d (%lu suppressed)",
+                       (unsigned)event->enc_change.conn_handle, bond_rc, (unsigned long)s);
+            }
+          }
         }
       }
       break;
@@ -1242,8 +1285,18 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       peripheral_adopt(event->repeat_pairing.conn_handle);
       if (picoruby_ble_connection_matches(event->repeat_pairing.conn_handle) &&
           ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
-        ble_store_util_delete_peer(&desc.peer_id_addr);
-        rc = BLE_GAP_REPEAT_PAIRING_RETRY;
+        int del_rc = ble_store_util_delete_peer(&desc.peer_id_addr);
+        struct ble_store_key_sec key = { .peer_addr = desc.peer_id_addr };
+        struct ble_store_value_sec bond;
+        if (ble_store_read_peer_sec(&key, &bond) != 0) {
+          rc = BLE_GAP_REPEAT_PAIRING_RETRY;
+        } else {
+          uint32_t s;
+          if (picoruby_log_due(PICORUBY_LOG_REPEAT_PAIRING, &s)) {
+            ESP_LOGW(BLE_TAG, "repeat pairing ignored: bond still stored after delete rc=%d (%lu suppressed)",
+                     del_rc, (unsigned long)s);
+          }
+        }
       }
       break;
     }
@@ -1256,7 +1309,11 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       if (role != BLE_ROLE_CENTRAL || !picoruby_ble_connection_matches(event->notify_rx.conn_handle)) break;
       uint16_t vlen = OS_MBUF_PKTLEN(event->notify_rx.om);
       if (vlen > VALUE_EVENT_DATA_MAX) {
-        ESP_LOGW(BLE_TAG, "notification exceeds event capacity: %u", (unsigned)vlen);
+        uint32_t s;
+        if (picoruby_log_due(PICORUBY_LOG_NOTIFY_RX, &s)) {
+          ESP_LOGW(BLE_TAG, "notification exceeds event capacity: %u (%lu suppressed)",
+                   (unsigned)vlen, (unsigned long)s);
+        }
         break;
       }
       uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 4 + VALUE_EVENT_DATA_MAX];
@@ -1265,7 +1322,10 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       put_le16(p + GATT_EVENT_PAYLOAD_OFFSET, event->notify_rx.attr_handle);
       put_le16(p + GATT_EVENT_PAYLOAD_OFFSET + 2, vlen);
       if (os_mbuf_copydata(event->notify_rx.om, 0, vlen, p + GATT_EVENT_PAYLOAD_OFFSET + 4) != 0) {
-        ESP_LOGW(BLE_TAG, "notification mbuf copy failed");
+        uint32_t s;
+        if (picoruby_log_due(PICORUBY_LOG_NOTIFY_RX, &s)) {
+          ESP_LOGW(BLE_TAG, "notification mbuf copy failed (%lu suppressed)", (unsigned long)s);
+        }
         break;
       }
       picoruby_nimble_enqueue_event(p, GATT_EVENT_PAYLOAD_OFFSET + 4 + vlen, PICORUBY_NIMBLE_EVENT_DATA);
@@ -1326,8 +1386,8 @@ power_terminate_connection(void)
     if (rc == 0 || rc == BLE_HS_EALREADY) terminating_add(links.handle[i]);
     if (rc == BLE_HS_ENOTCONN) known_link_remove(links.handle[i]);
     if (rc == 0 || rc == BLE_HS_EALREADY || rc == BLE_HS_ENOTCONN) continue;
-    if (picoruby_nimble_control_fault() & PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST) continue;
     ESP_LOGE(BLE_TAG, "connection termination failed: %d", rc);
+    if (picoruby_nimble_control_fault() & PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST) continue;
     picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
   }
   return links.count;
@@ -1382,7 +1442,7 @@ picoruby_ble_reconcile_connections(void)
 {
   if (role == BLE_ROLE_CENTRAL && picoruby_ble_central_reconcile_connect()) {
     ESP_LOGW(BLE_TAG, "connection lost: pending connect ended without a CONNECT event");
-    synth_le_connection_complete(0, status_to_u8(BLE_HS_ENOTCONN));
+    synth_le_connection_complete(0, picoruby_ble_status_code(BLE_HS_ENOTCONN));
     picoruby_nimble_cancel_control(PICORUBY_NIMBLE_CONTROL_CONNECTION_LOST);
     picoruby_ble_central_resume_after_connect();
   }

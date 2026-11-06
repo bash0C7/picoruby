@@ -17,6 +17,7 @@
 #include "nimble/ble.h"
 #include "os/os_mbuf.h"
 #include "os/os_mempool.h"
+#include "syscfg/syscfg.h"
 
 #include "ble_common.h"
 #include "nimble_owner.h"
@@ -25,9 +26,12 @@
 #define ATT_READ_RESERVE_BLOCKS 4
 #define NOTIFY_MAX_BLOCKS 3
 #define NOTIFY_RESERVE_KEY (-5)
-_Static_assert(CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE == 256, "reserve block counts assume 256-byte msys_1 blocks");
-_Static_assert(CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU <= 256, "NOTIFY_MAX_BLOCKS assumes an ATT MTU of at most 256");
-_Static_assert(CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT >= ATT_READ_RESERVE_BLOCKS + NOTIFY_MAX_BLOCKS, "msys_1 too small for the ATT response reserve");
+#if MYNEWT_VAL(MSYS_1_BLOCK_SIZE) == 256 && MYNEWT_VAL(BLE_ATT_PREFERRED_MTU) <= 256 && \
+    MYNEWT_VAL(MSYS_1_BLOCK_COUNT) >= ATT_READ_RESERVE_BLOCKS + NOTIFY_MAX_BLOCKS
+#define ATT_RESERVE_SUPPORTED 1
+#else
+#define ATT_RESERVE_SUPPORTED 0
+#endif
 
 static const char *BLE_TAG = "prb_ble_peripheral";
 
@@ -178,6 +182,15 @@ static int
 msys1_free_blocks(void)
 {
   static bool missing_logged;
+  static bool unsupported_logged;
+  if (!ATT_RESERVE_SUPPORTED) {
+    if (!unsupported_logged) {
+      unsupported_logged = true;
+      ESP_LOGW(BLE_TAG, "ATT response reserve needs 256-byte msys_1 blocks, ATT MTU <= 256 and %d blocks; disabled",
+               ATT_READ_RESERVE_BLOCKS + NOTIFY_MAX_BLOCKS);
+    }
+    return -1;
+  }
   struct os_mempool_info info;
   struct os_mempool *mp = NULL;
   while ((mp = os_mempool_info_get_next(mp, &info)) != NULL) {
@@ -289,9 +302,17 @@ adv_start(void)
   if (rc == 0) {
     rc = ble_gap_adv_start(picoruby_nimble_own_addr_type(), NULL, BLE_HS_FOREVER,
                            &params, picoruby_ble_gap_event, NULL);
-    if (rc != 0) ESP_LOGW(BLE_TAG, "advertising start failed: %d", rc);
+    if (rc != 0) {
+      uint32_t s;
+      if (picoruby_log_due(PICORUBY_LOG_ADV_START, &s)) {
+        ESP_LOGW(BLE_TAG, "advertising start failed: %d (%lu suppressed)", rc, (unsigned long)s);
+      }
+    }
   } else {
-    ESP_LOGW(BLE_TAG, "advertising set data failed: %d", rc);
+    uint32_t s;
+    if (picoruby_log_due(PICORUBY_LOG_ADV_START, &s)) {
+      ESP_LOGW(BLE_TAG, "advertising set data failed: %d (%lu suppressed)", rc, (unsigned long)s);
+    }
   }
   return rc;
 }
@@ -391,8 +412,10 @@ static void
 notify_log_failure(int key, uint16_t att_handle, const char *reason)
 {
   if (key == notify_last_logged_rc) return;
+  uint32_t s;
+  if (!picoruby_log_due(PICORUBY_LOG_NOTIFY, &s)) return;
   notify_last_logged_rc = key;
-  ESP_LOGW(BLE_TAG, "notify failed: %s: handle=%u key=%d", reason, (unsigned)att_handle, key);
+  ESP_LOGW(BLE_TAG, "notify failed: %s: handle=%u key=%d (%lu suppressed)", reason, (unsigned)att_handle, key, (unsigned long)s);
 }
 
 static int
