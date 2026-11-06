@@ -232,7 +232,7 @@ picoruby_ble_peripheral_service_send_permit(void)
     picoruby_ble_connection_gate_exit();
     return;
   }
-  if (!picoruby_ble_connection_matches(con_handle)) {
+  if (!picoruby_ble_connection_matches(picoruby_ble_connection_handle_snapshot())) {
     cancel_send_permit();
     picoruby_ble_connection_gate_exit();
     return;
