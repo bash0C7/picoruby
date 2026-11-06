@@ -1475,7 +1475,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
     }
     memcpy(replacement, profile_data, len);
   }
-  if (picoruby_nimble_started() && picoruby_nimble_stop() != 0) {
+  if (picoruby_nimble_stop() != 0) {
     free(replacement);
     ESP_LOGE(BLE_TAG, "NimBLE stop failed");
     return -1;

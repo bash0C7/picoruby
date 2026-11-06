@@ -67,7 +67,6 @@ typedef struct {
 static evq_entry_t *evq = NULL;
 static int evq_head = 0;
 static int evq_count = 0;
-static uint32_t evq_gen = 0;
 static uint32_t evq_dropped = 0;
 static portMUX_TYPE evq_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t control_fault;
@@ -88,7 +87,6 @@ static int wrq_tail = -1;
 static int wrq_count = 0;
 static int wrq_cccd_reserved = 0;
 static int wrq_cccd_queued = 0;
-static uint32_t wrq_generation = 0;
 static uint32_t wrq_dropped = 0;
 static portMUX_TYPE wrq_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -98,15 +96,12 @@ static uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static SemaphoreHandle_t sync_sem = NULL;
 static SemaphoreHandle_t host_done_sem = NULL;
 static struct ble_npl_event host_exit_event;
-static bool host_exit_initialized;
 static bool host_stop_pending = false;
-static bool host_done_seen = false;
 static bool cleanup_blocked = false;
 static bool lifecycle_busy = false;
 static portMUX_TYPE owner_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static esp_timer_handle_t heartbeat_timer = NULL;
 static esp_timer_handle_t halting_timer = NULL;
-static int heartbeat_depth = 0;
 static bool heartbeat_pending = false;
 
 #define LOG_LIMIT_INTERVAL_US 1000000
@@ -130,7 +125,6 @@ static const char *const log_site_name[PICORUBY_LOG_SITE_COUNT] = {
   "advertising start failure",
   "notify failure",
   "event queue full",
-  "event dropped, queue not ready",
   "write queue full",
   "CCCD value replaced before delivery",
   "write delivery failure",
@@ -172,15 +166,21 @@ picoruby_log_flush(void)
   }
 }
 
+static void
+heartbeat_mark_pending(void)
+{
+  taskENTER_CRITICAL(&owner_state_mux);
+  heartbeat_pending = true;
+  taskEXIT_CRITICAL(&owner_state_mux);
+}
+
 void
 picoruby_nimble_cancel_control(uint8_t reason)
 {
   taskENTER_CRITICAL(&evq_mux);
   control_fault |= reason;
   taskEXIT_CRITICAL(&evq_mux);
-  taskENTER_CRITICAL(&owner_state_mux);
-  heartbeat_pending = true;
-  taskEXIT_CRITICAL(&owner_state_mux);
+  heartbeat_mark_pending();
 }
 
 uint8_t
@@ -205,32 +205,15 @@ reserve_event_storage(void)
   if (storage == NULL) return -1;
 
   taskENTER_CRITICAL(&evq_mux);
-  if (evq == NULL) {
-    evq = storage;
-    storage = NULL;
-  }
+  evq = storage;
   taskEXIT_CRITICAL(&evq_mux);
-  if (storage != NULL) heap_caps_free(storage);
   return 0;
 }
 
 picoruby_nimble_event_result_t
 picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class)
 {
-  if (len > EVQ_PKT_MAX) {
-    ESP_LOGW(TAG, "event exceeds queue capacity: %u", (unsigned)len);
-    return PICORUBY_NIMBLE_EVENT_TOO_LARGE;
-  }
   taskENTER_CRITICAL(&evq_mux);
-  if (evq == NULL) {
-    taskEXIT_CRITICAL(&evq_mux);
-    uint32_t s;
-    if (picoruby_log_due(PICORUBY_LOG_EVENT_NOT_READY, &s)) {
-      ESP_LOGW(TAG, "event dropped, queue not ready: len=%u (%lu suppressed)",
-               (unsigned)len, (unsigned long)s);
-    }
-    return PICORUBY_NIMBLE_EVENT_NOT_READY;
-  }
   int limit = event_class == PICORUBY_NIMBLE_EVENT_CONTROL ? EVQ_DEPTH : EVQ_DATA_DEPTH;
   if (evq_count >= limit) {
     evq_dropped++;
@@ -257,7 +240,6 @@ picoruby_nimble_reset_events(void)
   taskENTER_CRITICAL(&evq_mux);
   evq_head = 0;
   evq_count = 0;
-  evq_gen++;
   taskEXIT_CRITICAL(&evq_mux);
   taskENTER_CRITICAL(&owner_state_mux);
   heartbeat_pending = false;
@@ -267,10 +249,6 @@ picoruby_nimble_reset_events(void)
 static int
 wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
 {
-  if (ruby_handle == 0 || len == 0 || len > WRQ_PKT_MAX) {
-    ESP_LOGW(TAG, "write rejected: handle=%u len=%u", (unsigned)ruby_handle, (unsigned)len);
-    return -1;
-  }
   taskENTER_CRITICAL(&wrq_mux);
   if (cccd) {
     for (int slot = wrq_head; slot >= 0; slot = wrq[slot].next) {
@@ -303,7 +281,6 @@ wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
   wrq[slot].occupied = true;
   wrq[slot].cccd = cccd;
   wrq[slot].next = -1;
-  wrq[slot].generation++;
   wrq[slot].ruby_handle = ruby_handle;
   wrq[slot].len = len;
   memcpy(wrq[slot].data, data, len);
@@ -340,7 +317,6 @@ void
 picoruby_nimble_reset_writes(void)
 {
   taskENTER_CRITICAL(&wrq_mux);
-  wrq_generation++;
   wrq_head = wrq_tail = -1;
   wrq_count = 0;
   wrq_cccd_queued = 0;
@@ -354,7 +330,6 @@ drain_events(void)
   static uint8_t buf[EVQ_PKT_MAX];
   for (;;) {
     uint16_t len;
-    uint32_t gen;
     taskENTER_CRITICAL(&evq_mux);
     if (evq == NULL || evq_count == 0) {
       taskEXIT_CRITICAL(&evq_mux);
@@ -362,14 +337,11 @@ drain_events(void)
     }
     len = evq[evq_head].len;
     memcpy(buf, evq[evq_head].data, len);
-    gen = evq_gen;
     taskEXIT_CRITICAL(&evq_mux);
     if (BLE_push_event(buf, len) != 0) return;
     taskENTER_CRITICAL(&evq_mux);
-    if (gen == evq_gen) {
-      evq_head = (evq_head + 1) % EVQ_DEPTH;
-      evq_count--;
-    }
+    evq_head = (evq_head + 1) % EVQ_DEPTH;
+    evq_count--;
     taskEXIT_CRITICAL(&evq_mux);
   }
 }
@@ -382,7 +354,6 @@ drain_writes(void)
     uint16_t handle;
     uint16_t len;
     uint32_t slot_generation;
-    uint32_t ring_generation;
     int slot;
     taskENTER_CRITICAL(&wrq_mux);
     if (wrq_head < 0) {
@@ -394,7 +365,6 @@ drain_writes(void)
     len = wrq[slot].len;
     memcpy(buf, wrq[slot].data, len);
     slot_generation = wrq[slot].generation;
-    ring_generation = wrq_generation;
     taskEXIT_CRITICAL(&wrq_mux);
     if (BLE_write_data(handle, buf, len) != 0) {
       uint32_t s;
@@ -405,8 +375,7 @@ drain_writes(void)
       return;
     }
     taskENTER_CRITICAL(&wrq_mux);
-    if (wrq_generation == ring_generation && wrq_head == slot && wrq[slot].occupied &&
-        wrq[slot].generation == slot_generation) {
+    if (wrq[slot].generation == slot_generation) {
       wrq_head = wrq[slot].next;
       if (wrq_head < 0) wrq_tail = -1;
       wrq[slot].occupied = false;
@@ -436,7 +405,6 @@ halting_timer_cb(void *arg)
 void
 picoruby_nimble_halting_watchdog_start(void)
 {
-  if (halting_timer == NULL) return;
   esp_err_t err = esp_timer_start_once(halting_timer, HALTING_WATCHDOG_US);
   if (err != ESP_OK) ESP_LOGE(TAG, "halting watchdog start failed: %d", err);
 }
@@ -470,34 +438,23 @@ void
 picoruby_nimble_heartbeat_enable(bool enable)
 {
   if (heartbeat_timer == NULL) return;
-  bool start_timer = false;
-  bool stop_timer = false;
-  taskENTER_CRITICAL(&owner_state_mux);
-  bool ready = started && synced && !host_stop_pending && !cleanup_blocked && !lifecycle_busy;
-  if (enable) {
-    if (ready && heartbeat_depth++ == 0) start_timer = true;
-  } else if (!ready) {
-    heartbeat_depth = 0;
-    stop_timer = true;
-  } else {
-    if (heartbeat_depth > 0) heartbeat_depth--;
-    if (heartbeat_depth == 0) stop_timer = true;
+  if (!enable) {
+    esp_timer_stop(heartbeat_timer);
+    return;
   }
+  taskENTER_CRITICAL(&owner_state_mux);
+  bool ready = synced && !host_stop_pending;
   taskEXIT_CRITICAL(&owner_state_mux);
-  if (start_timer) {
+  if (ready) {
     esp_err_t err = esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_PERIOD_US);
     if (err != ESP_OK) ESP_LOGE(TAG, "heartbeat timer start failed: %d", err);
   }
-  if (stop_timer) esp_timer_stop(heartbeat_timer);
 }
 
 static void
 heartbeat_force_stop(void)
 {
-  taskENTER_CRITICAL(&owner_state_mux);
-  heartbeat_depth = 0;
-  taskEXIT_CRITICAL(&owner_state_mux);
-  if (heartbeat_timer) esp_timer_stop(heartbeat_timer);
+  esp_timer_stop(heartbeat_timer);
 }
 
 static void
@@ -522,7 +479,7 @@ on_sync(void)
   }
   taskEXIT_CRITICAL(&owner_state_mux);
   if (give_sync && rc == 0) picoruby_ble_connection_reopen();
-  if (give_sync && sync_sem) xSemaphoreGive(sync_sem);
+  if (give_sync) xSemaphoreGive(sync_sem);
 }
 
 static void
@@ -565,7 +522,7 @@ host_task(void *param)
   struct ble_npl_eventq *queue = nimble_port_get_dflt_eventq();
   while (true) {
     struct ble_npl_event *event = ble_npl_eventq_get(queue, BLE_NPL_TIME_FOREVER);
-    if (event != NULL && run_host_event(event)) break;
+    if (run_host_event(event)) break;
   }
   xSemaphoreGive(host_done_sem);
   vTaskDelete(NULL);
@@ -610,7 +567,7 @@ finish_start(int status)
 }
 
 static int
-stop_host(bool issue_stop, bool done_seen)
+stop_host(bool issue_stop)
 {
   if (issue_stop) {
     picoruby_ble_connection_close();
@@ -638,21 +595,13 @@ stop_host(bool issue_stop, bool done_seen)
     taskEXIT_CRITICAL(&owner_state_mux);
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &host_exit_event);
   }
-  if (!done_seen) {
-    if (xSemaphoreTake(host_done_sem, HOST_DONE_TIMEOUT_TICKS) != pdTRUE) {
-      taskENTER_CRITICAL(&owner_state_mux);
-      lifecycle_busy = false;
-      taskEXIT_CRITICAL(&owner_state_mux);
-      return -1;
-    }
+  if (xSemaphoreTake(host_done_sem, HOST_DONE_TIMEOUT_TICKS) != pdTRUE) {
     taskENTER_CRITICAL(&owner_state_mux);
-    host_done_seen = true;
+    lifecycle_busy = false;
     taskEXIT_CRITICAL(&owner_state_mux);
+    return -1;
   }
-  if (host_exit_initialized) {
-    ble_npl_event_deinit(&host_exit_event);
-    host_exit_initialized = false;
-  }
+  ble_npl_event_deinit(&host_exit_event);
   int rc = nimble_port_deinit();
   taskENTER_CRITICAL(&owner_state_mux);
   lifecycle_busy = false;
@@ -662,7 +611,6 @@ stop_host(bool issue_stop, bool done_seen)
   } else {
     started = false;
     host_stop_pending = false;
-    host_done_seen = false;
   }
   taskEXIT_CRITICAL(&owner_state_mux);
   return rc;
@@ -672,19 +620,6 @@ int
 picoruby_nimble_start(picoruby_nimble_setup_fn setup)
 {
   taskENTER_CRITICAL(&owner_state_mux);
-  bool blocked = cleanup_blocked;
-  bool busy = lifecycle_busy;
-  bool stopping = host_stop_pending;
-  if (blocked || busy || stopping) {
-    taskEXIT_CRITICAL(&owner_state_mux);
-    ESP_LOGE(TAG, "NimBLE start refused: cleanup_blocked=%d lifecycle_busy=%d host_stop_pending=%d",
-             (int)blocked, (int)busy, (int)stopping);
-    return -1;
-  }
-  if (started) {
-    taskEXIT_CRITICAL(&owner_state_mux);
-    return 0;
-  }
   lifecycle_busy = true;
   taskEXIT_CRITICAL(&owner_state_mux);
   if (reserve_event_storage() != 0) {
@@ -751,13 +686,7 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
     return finish_start(-1);
   }
   ble_npl_event_init(&host_exit_event, host_exit_event_cb, NULL);
-  host_exit_initialized = true;
   (void)xSemaphoreTake(sync_sem, 0);
-  taskENTER_CRITICAL(&owner_state_mux);
-  synced = false;
-  host_stop_pending = false;
-  host_done_seen = false;
-  taskEXIT_CRITICAL(&owner_state_mux);
   taskENTER_CRITICAL(&evq_mux);
   control_fault = 0;
   taskEXIT_CRITICAL(&evq_mux);
@@ -765,7 +694,6 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
                               NULL, (configMAX_PRIORITIES - 4), NULL, NIMBLE_CORE) != pdPASS) {
     ESP_LOGE(TAG, "host task creation failed");
     ble_npl_event_deinit(&host_exit_event);
-    host_exit_initialized = false;
     if (nimble_port_deinit() != ESP_OK) {
       esp_system_abort("NimBLE startup cleanup failed");
     }
@@ -781,7 +709,7 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   if (!sync_ok) started = true;
   taskEXIT_CRITICAL(&owner_state_mux);
   if (!sync_ok) {
-    int stop_rc = stop_host(true, false);
+    int stop_rc = stop_host(true);
     ESP_LOGE(TAG, "NimBLE did not sync; stop_host returned %d", stop_rc);
     return -1;
   }
@@ -793,19 +721,14 @@ int
 picoruby_nimble_stop(void)
 {
   taskENTER_CRITICAL(&owner_state_mux);
-  if (cleanup_blocked || lifecycle_busy) {
-    taskEXIT_CRITICAL(&owner_state_mux);
-    return -1;
-  }
   if (!started) {
     taskEXIT_CRITICAL(&owner_state_mux);
     return 0;
   }
   lifecycle_busy = true;
   bool issue_stop = !host_stop_pending;
-  bool done_seen = host_done_seen;
   taskEXIT_CRITICAL(&owner_state_mux);
-  return stop_host(issue_stop, done_seen);
+  return stop_host(issue_stop);
 }
 
 bool
@@ -821,7 +744,7 @@ bool
 picoruby_nimble_ready(void)
 {
   taskENTER_CRITICAL(&owner_state_mux);
-  bool value = started && synced && !host_stop_pending && !cleanup_blocked && !lifecycle_busy;
+  bool value = started && synced && !host_stop_pending && !lifecycle_busy;
   taskEXIT_CRITICAL(&owner_state_mux);
   return value && picoruby_nimble_control_fault() == 0;
 }

@@ -34,6 +34,5 @@ pump_service(mrb_state *mrb, void *ud)
 void
 picoruby_nimble_attach_vm(void *vm)
 {
-  if (vm == NULL) return;
   picorb_scheduler_service_add((mrb_state *)vm, pump_service, NULL);
 }
