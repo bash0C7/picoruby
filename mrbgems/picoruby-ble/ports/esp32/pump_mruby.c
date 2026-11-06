@@ -1,3 +1,5 @@
+#if defined(PICORB_VM_MRUBY)
+
 #include "nimble_owner.h"
 #include "../../../picoruby-machine/include/hal.h"
 #include "mruby/error.h"
@@ -27,3 +29,5 @@ picoruby_nimble_attach_vm(void *vm)
   if (vm == NULL) return;
   picorb_scheduler_service_add((mrb_state *)vm, pump_service, NULL);
 }
+
+#endif

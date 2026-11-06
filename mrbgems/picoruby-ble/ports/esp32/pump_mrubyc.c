@@ -1,3 +1,5 @@
+#if defined(PICORB_VM_MRUBYC)
+
 #include <stddef.h>
 #include "nimble_owner.h"
 #include "../../../picoruby-machine/include/hal.h"
@@ -15,3 +17,5 @@ picoruby_nimble_attach_vm(void *vm)
   (void)vm;
   picorb_scheduler_service_add(pump_service, NULL);
 }
+
+#endif
