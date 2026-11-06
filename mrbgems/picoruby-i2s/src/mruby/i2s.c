@@ -7,19 +7,19 @@ static mrb_value mrb_i2s__init(mrb_state *mrb, mrb_value self)
 {
   mrb_int rate, bits, mono;
   mrb_get_args(mrb, "iii", &rate, &bits, &mono);
-  return mrb_fixnum_value(I2S_init((uint32_t)rate, (uint8_t)bits, (uint8_t)mono));
+  return mrb_int_value(mrb, I2S_init((uint32_t)rate, (uint8_t)bits, (uint8_t)mono));
 }
 
 static mrb_value mrb_i2s__write(mrb_state *mrb, mrb_value self)
 {
   char *buf; mrb_int len;
   mrb_get_args(mrb, "s", &buf, &len);
-  return mrb_fixnum_value(I2S_write((const uint8_t *)buf, (uint32_t)len));
+  return mrb_int_value(mrb, I2S_write((const uint8_t *)buf, (uint32_t)len));
 }
 
 static mrb_value mrb_i2s__deinit(mrb_state *mrb, mrb_value self)
 {
-  return mrb_fixnum_value(I2S_deinit());
+  return mrb_int_value(mrb, I2S_deinit());
 }
 
 void mrb_picoruby_i2s_gem_init(mrb_state *mrb)

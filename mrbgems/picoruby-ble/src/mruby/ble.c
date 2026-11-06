@@ -99,7 +99,7 @@ int
 BLE_write_pending(uint16_t att_handle)
 {
   if (_mrb == NULL || mrb_hash_p(write_values) == false) return 0;
-  mrb_value queue = mrb_hash_get(_mrb, write_values, mrb_fixnum_value(att_handle));
+  mrb_value queue = mrb_hash_get(_mrb, write_values, mrb_int_value(_mrb, att_handle));
   if (!mrb_array_p(queue)) return 0;
   return (int)RARRAY_LEN(queue);
 }
