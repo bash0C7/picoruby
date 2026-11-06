@@ -24,7 +24,6 @@ static uint8_t adv_data_buf[31];
 int
 BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len, bool connectable)
 {
-  if (adv_data_len > sizeof(adv_data_buf)) return -1;
   memcpy(adv_data_buf, adv_data, adv_data_len);
   // setup advertisements
   uint16_t adv_int_min = 800;

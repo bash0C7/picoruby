@@ -53,9 +53,6 @@ class BLE
         end
         vi += 1
       end
-      if length > 0xff
-        raise ArgumentError, "AD field exceeds 255 bytes"
-      end
       @data << [length].pack("C") << field
       length
     end

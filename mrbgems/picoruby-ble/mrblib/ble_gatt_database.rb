@@ -199,7 +199,7 @@ class BLE
     end
 
     def uuid2str(uuid)
-      if uuid.is_a?(Integer) && (uuid < 0 || 0xffff < (uuid >> 16))
+      if uuid.is_a?(Integer) && (0xffff < (uuid >> 16))
         raise "invalid uuid: #{uuid.inspect}"
       end
       if uuid.is_a?(String)

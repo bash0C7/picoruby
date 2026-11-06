@@ -63,19 +63,6 @@ mrb_ble_check_active_owner(mrb_state *mrb, mrb_value self)
 }
 
 static mrb_value
-mrb_active_owner(mrb_state *mrb, mrb_value self)
-{
-  return mrb_bool_value(mrb_ble_active_owner(mrb, self));
-}
-
-static mrb_value
-mrb_check_active_owner(mrb_state *mrb, mrb_value self)
-{
-  mrb_ble_check_active_owner(mrb, self);
-  return mrb_nil_value();
-}
-
-static mrb_value
 mrb_check_registration(mrb_state *mrb, mrb_value self)
 {
   mrb_value expected;
@@ -93,7 +80,6 @@ mrb_power_control_registration(mrb_state *mrb, mrb_value self)
   mrb_value expected;
   mrb_int mode;
   mrb_get_args(mrb, "oi", &expected, &mode);
-  if (mode < 0 || mode > 1) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid BLE power mode");
   if (!mrb_ble_active_owner(mrb, self) || !mrb_obj_eq(mrb, expected, event_queue)) {
     return mrb_false_value();
   }
@@ -107,7 +93,7 @@ mrb_power_control_registration(mrb_state *mrb, mrb_value self)
 static bool
 ble_event_queue_has_capacity(void)
 {
-  if (_mrb == NULL || !mrb_data_p(event_queue)) return false;
+  if (_mrb == NULL) return false;
   return pending_event_count < BLE_MAX_PENDING_EVENTS;
 }
 
@@ -154,9 +140,6 @@ mrb_event_queue_cleared(mrb_state *mrb, mrb_value self)
   mrb_get_args(mrb, "|o", &expected);
   mrb_ble_check_active_owner(mrb, self);
   if (!mrb_obj_eq(mrb, expected, event_queue)) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE owner registration changed");
-  if (_mrb != mrb || !mrb_data_p(event_queue)) {
-    mrb_raise(mrb, E_TYPE_ERROR, "BLE event queue is not initialized");
-  }
   mrb_funcall_id(mrb, event_queue, MRB_SYM(clear), 0);
   pending_event_count = 0;
   BLE_events_cleared();
@@ -201,7 +184,7 @@ mrb_pop_write_value(mrb_state *mrb, mrb_value self)
   mrb_ble_check_active_owner(mrb, self);
   mrb_int handle;
   mrb_get_args(mrb, "i", &handle);
-  if (handle <= 0 || handle > UINT16_MAX) return mrb_nil_value();
+  if (handle == 0) return mrb_nil_value();
   mrb_value key = mrb_int_value(mrb, handle);
   mrb_value queue = mrb_hash_get(mrb, write_values, key);
   if (!mrb_array_p(queue) || RARRAY_LEN(queue) == 0) {
@@ -268,7 +251,7 @@ mrb__init(mrb_state *mrb, mrb_value self)
   size_t new_profile_len = 0;
   if (ble_role == BLE_ROLE_PERIPHERAL && mrb_string_p(profile)) {
     new_profile_len = (size_t)RSTRING_LEN(profile);
-    if (new_profile_len == 0 || BLE_profile_extent((const uint8_t *)RSTRING_PTR(profile), new_profile_len, NULL) < 0) {
+    if (BLE_profile_extent((const uint8_t *)RSTRING_PTR(profile), new_profile_len, NULL) < 0) {
       mrb_raise(mrb, E_ARGUMENT_ERROR, "BLE._init: invalid profile");
     }
     new_profile = (uint8_t *)mrb_malloc(mrb, new_profile_len);
@@ -329,7 +312,6 @@ static mrb_value
 mrb_control_fault(mrb_state *mrb, mrb_value self)
 {
   mrb_ble_check_active_owner(mrb, self);
-  mrb_get_args(mrb, "");
   return mrb_int_value(mrb, BLE_control_fault());
 }
 
@@ -371,8 +353,6 @@ mrb_picoruby_ble_gem_init(mrb_state* mrb)
   struct RClass *class_BLE = mrb_define_class_id(mrb, MRB_SYM(BLE), mrb->object_class);
 
   mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_native_ready), mrb_native_ready, MRB_ARGS_NONE());
-  mrb_define_private_method_id(mrb, class_BLE, MRB_SYM_Q(_active_owner), mrb_active_owner, MRB_ARGS_NONE());
-  mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_check_active_owner), mrb_check_active_owner, MRB_ARGS_NONE());
   mrb_define_private_method_id(mrb, class_BLE, MRB_SYM(_init), mrb__init, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(hci_power_control), mrb_hci_power_control, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(gap_local_bd_addr), mrb_gap_local_bd_addr, MRB_ARGS_NONE());

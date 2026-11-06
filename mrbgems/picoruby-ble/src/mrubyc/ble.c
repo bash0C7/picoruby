@@ -28,39 +28,17 @@ mrbc_ble_check_active_owner(mrbc_vm *vm, mrbc_value *self)
   return false;
 }
 
-static void
-c_active_owner(mrbc_vm *vm, mrbc_value *v, int argc)
-{
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
-  SET_BOOL_RETURN(mrbc_ble_active_owner(&v[0]));
-}
-
-static void
-c_check_active_owner(mrbc_vm *vm, mrbc_value *v, int argc)
-{
-  if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
-  SET_NIL_RETURN();
-}
-
 static bool
 mrbc_same_registration(mrbc_value *expected)
 {
-  return expected->tt == MRBC_TT_OBJECT && event_queue.tt == MRBC_TT_OBJECT &&
-         expected->instance == event_queue.instance;
+  return expected->tt == MRBC_TT_OBJECT && expected->instance == event_queue.instance;
 }
 
 static void
 c_check_registration(mrbc_vm *vm, mrbc_value *v, int argc)
 {
   if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 1 || !mrbc_same_registration(&v[1])) {
+  if (!mrbc_same_registration(&v[1])) {
     mrbc_raise(vm, MRBC_CLASS(RuntimeError), "BLE start owner belongs to an earlier initialization");
     return;
   }
@@ -70,10 +48,6 @@ c_check_registration(mrbc_vm *vm, mrbc_value *v, int argc)
 static void
 c_power_control_registration(mrbc_vm *vm, mrbc_value *v, int argc)
 {
-  if (argc != 2 || v[2].tt != MRBC_TT_INTEGER || v[2].i < 0 || v[2].i > 1) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "invalid BLE power mode");
-    return;
-  }
   if (!mrbc_ble_active_owner(&v[0]) || !mrbc_same_registration(&v[1])) {
     SET_FALSE_RETURN();
     return;
@@ -137,10 +111,6 @@ static void
 c_event_popped(mrbc_vm *vm, mrbc_value *v, int argc)
 {
   if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
   if (pending_event_count > 0) pending_event_count--;
   SET_NIL_RETURN();
 }
@@ -149,16 +119,8 @@ static void
 c_event_queue_cleared(mrbc_vm *vm, mrbc_value *v, int argc)
 {
   if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc > 1) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
-  if (argc == 1 && !mrbc_same_registration(&v[1])) {
+  if (argc == 1 &&!mrbc_same_registration(&v[1])) {
     mrbc_raise(vm, MRBC_CLASS(RuntimeError), "BLE owner registration changed");
-    return;
-  }
-  if (event_queue.tt != MRBC_TT_OBJECT) {
-    mrbc_raise(vm, MRBC_CLASS(TypeError), "BLE event queue is not initialized");
     return;
   }
   mrbc_value cleared = mrbc_send(vm, v, argc, &event_queue, "clear", 0);
@@ -214,7 +176,7 @@ c_pop_write_value(mrbc_vm *vm, mrbc_value *v, int argc)
     return;
   }
   mrbc_int_t handle = GET_INT_ARG(1);
-  if (handle <= 0 || handle > UINT16_MAX) {
+  if (handle == 0) {
     SET_NIL_RETURN();
     return;
   }
@@ -264,10 +226,6 @@ c_push_read_value(mrbc_vm *vm, mrbc_value *v, int argc)
 static void
 c__init(mrbc_vm *vm, mrbc_value *v, int argc)
 {
-  if (argc != 1) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
   if (GET_TT_ARG(1) != MRBC_TT_STRING && GET_TT_ARG(1) != MRBC_TT_NIL) {
     mrbc_raise(vm, MRBC_CLASS(TypeError), "BLE._init: wrong argument type");
     return;
@@ -300,7 +258,7 @@ c__init(mrbc_vm *vm, mrbc_value *v, int argc)
      * it, so a refcounted Ruby string is the wrong owner (the old
      * code leaked one copy per BLE.new). */
     new_profile_len = (size_t)v[1].string->size;
-    if (new_profile_len == 0 || BLE_profile_extent((const uint8_t *)v[1].string->data, new_profile_len, NULL) < 0) {
+    if (BLE_profile_extent((const uint8_t *)v[1].string->data, new_profile_len, NULL) < 0) {
       mrbc_raise(vm, MRBC_CLASS(ArgumentError), "BLE._init: invalid profile");
       return;
     }
@@ -367,10 +325,6 @@ static void
 c_control_fault(mrbc_vm *vm, mrbc_value *v, int argc)
 {
   if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
   SET_INT_RETURN(BLE_control_fault());
 }
 
@@ -378,10 +332,6 @@ static void
 c_native_ready(mrbc_vm *vm, mrbc_value *v, int argc)
 {
   if (!mrbc_ble_check_active_owner(vm, &v[0])) return;
-  if (argc != 0) {
-    mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
-    return;
-  }
   SET_BOOL_RETURN(BLE_ready());
 }
 
@@ -440,8 +390,6 @@ mrbc_ble_init(mrbc_vm *vm)
 {
   mrbc_class *class_BLE = mrbc_define_class(vm, "BLE", mrbc_class_object);
   mrbc_define_method(vm, class_BLE, "_native_ready", c_native_ready);
-  mrbc_define_method(vm, class_BLE, "_active_owner?", c_active_owner);
-  mrbc_define_method(vm, class_BLE, "_check_active_owner", c_check_active_owner);
   mrbc_define_method(vm, class_BLE, "_init", c__init);
   mrbc_define_method(vm, class_BLE, "hci_power_control", c_hci_power_control);
   mrbc_define_method(vm, class_BLE, "gap_local_bd_addr", c_gap_local_bd_addr);

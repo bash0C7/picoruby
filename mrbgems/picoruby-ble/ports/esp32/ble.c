@@ -1392,10 +1392,7 @@ int
 BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
 {
   size_t len;
-  if (BLE_profile_extent(profile_data, profile_len, &len) < 0) {
-    ESP_LOGE(BLE_TAG, "profile blob is malformed");
-    return -1;
-  }
+  BLE_profile_extent(profile_data, profile_len, &len);
   if (validate_att_topology(profile_data, len) < 0) {
     ESP_LOGE(BLE_TAG, "profile rejected at handle %u: %s",
              (unsigned)profile_reject_handle, profile_reject_reason);

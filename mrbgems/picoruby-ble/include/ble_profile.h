@@ -14,7 +14,7 @@ BLE_profile_extent(const uint8_t *db, size_t db_len, size_t *extent)
   }
   if (db_len < 1 || db[0] != 1) return -1;
   size_t pos = 1;
-  while (pos <= db_len && db_len - pos >= 2) {
+  while (db_len - pos >= 2) {
     size_t entry_size = (size_t)db[pos] | ((size_t)db[pos + 1] << 8);
     if (entry_size == 0) {
       if (extent) *extent = pos + 2;

@@ -139,7 +139,6 @@ heartbeat_handler(struct btstack_timer_source *ts)
 int
 BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
 {
-  if (BLE_profile_extent(profile_data, profile_len, NULL) < 0) return -1;
   l2cap_init();
   sm_init();
 
