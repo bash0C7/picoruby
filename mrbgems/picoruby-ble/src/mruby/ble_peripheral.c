@@ -37,7 +37,7 @@ static mrb_value
 mrb_disconnect(mrb_state *mrb, mrb_value self)
 {
   BLE_peripheral_disconnect();
-  return mrb_fixnum_value(0);
+  return mrb_int_value(mrb, 0);
 }
 
 void
