@@ -154,6 +154,12 @@ static bool have_services = false;
 static uint8_t *owned_profile_data = NULL;
 static bool conn_sc = false;
 
+static void
+conn_security_set(bool sc)
+{
+  conn_sc = sc;
+}
+
 uint16_t
 picoruby_ble_handle_r2n(uint16_t ruby_handle)
 {
@@ -226,6 +232,12 @@ terminating_remove(uint16_t handle)
   return false;
 }
 
+static void
+terminating_clear(void)
+{
+  terminating_count = 0;
+}
+
 static uint16_t known_link[MYNEWT_VAL(BLE_MAX_CONNECTIONS)];
 static int known_link_count;
 
@@ -282,7 +294,7 @@ peripheral_adopt(uint16_t handle)
   }
   if (!picoruby_ble_connection_claim(handle)) return;
   known_link_add(handle);
-  conn_sc = false;
+  conn_security_set(false);
   picoruby_ble_central_reset_request();
 }
 
@@ -1057,7 +1069,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status == BLE_HS_EAGAIN ||
             ble_gap_conn_find(event->connect.conn_handle, NULL) != 0) {
           picoruby_ble_connection_release(event->connect.conn_handle);
-          conn_sc = false;
+          conn_security_set(false);
           picoruby_ble_central_reset_request();
           synth_disconnection_complete(event->connect.conn_handle,
                                        terminating_remove(event->connect.conn_handle) ? BLE_ERR_CONN_TERM_LOCAL : BLE_ERR_CONN_ESTABLISHMENT);
@@ -1079,7 +1091,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
           }
           break;
         }
-        conn_sc = false;
+        conn_security_set(false);
         picoruby_ble_central_reset_request();
         if (role == BLE_ROLE_CENTRAL) {
           struct ble_gap_conn_desc desc;
@@ -1132,7 +1144,7 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
         }
         break;
       }
-      conn_sc = false;
+      conn_security_set(false);
       picoruby_ble_central_reset_request();
       if (role == BLE_ROLE_PERIPHERAL || role == BLE_ROLE_CENTRAL) {
         synth_disconnection_complete(event->disconnect.conn.conn_handle,
@@ -1176,13 +1188,13 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
       }
       peripheral_adopt(event->enc_change.conn_handle);
       if (picoruby_ble_connection_matches(event->enc_change.conn_handle)) {
-        conn_sc = false;
+        conn_security_set(false);
         struct ble_gap_conn_desc desc;
         if (event->enc_change.status == 0 && ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
           struct ble_store_key_sec key = { .peer_addr = desc.peer_id_addr };
           struct ble_store_value_sec bond;
           int bond_rc = ble_store_read_peer_sec(&key, &bond);
-          conn_sc = bond_rc == 0 && bond.ltk_present && bond.sc;
+          conn_security_set(bond_rc == 0 && bond.ltk_present && bond.sc);
           if (bond_rc != 0 && bond_rc != BLE_HS_ENOENT) {
             uint32_t s;
             if (picoruby_log_due(PICORUBY_LOG_BOND_READ, &s)) {
@@ -1396,8 +1408,8 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
   role = (enum BLE_role_t)ble_role;
   power_on_requested = false;
   picoruby_ble_connection_close();
-  terminating_count = 0;
-  known_link_count = 0;
+  terminating_clear();
+  picoruby_ble_known_links_clear();
   central_connect_token = 0;
   have_services = false;
   attr_map_count = 0;

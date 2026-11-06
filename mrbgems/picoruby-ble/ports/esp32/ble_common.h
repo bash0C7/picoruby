@@ -20,7 +20,6 @@ bool picoruby_ble_connection_matches(uint16_t handle);
 bool picoruby_ble_connection_claim(uint16_t handle);
 bool picoruby_ble_connection_release(uint16_t handle);
 void picoruby_ble_connection_forget(uint16_t handle);
-bool picoruby_ble_connection_available(void);
 bool picoruby_ble_connection_defer_connect(void);
 void picoruby_ble_connection_clear_deferred(void);
 bool picoruby_ble_connection_release_deferred_record(void);
@@ -43,7 +42,6 @@ uint16_t picoruby_ble_connection_handle_snapshot(void);
 void picoruby_ble_central_reset_request(void);
 int picoruby_ble_att_payload_status(uint16_t handle, uint16_t size);
 uint8_t picoruby_ble_status_code(int rc);
-uint8_t picoruby_ble_request_status(int rc);
 void picoruby_ble_known_links_clear(void);
 
 #define EVT_ATT_CAN_SEND_NOW 0xB7

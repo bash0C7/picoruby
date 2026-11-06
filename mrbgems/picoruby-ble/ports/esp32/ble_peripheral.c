@@ -49,13 +49,11 @@ static uint8_t central_connect_deferred;
 #define CONNECT_DEFERRED_REQUEST 0x01
 #define CONNECT_DEFERRED_RECORD 0x02
 static bool send_permit_pending;
-static uint16_t send_permit_handle = 0xffff;
 
 static void
 cancel_send_permit(void)
 {
   send_permit_pending = false;
-  send_permit_handle = 0xffff;
 }
 
 bool
@@ -98,7 +96,6 @@ picoruby_ble_connection_release(uint16_t handle)
 void
 picoruby_ble_connection_forget(uint16_t handle)
 {
-  if (handle == 0xffff || handle != con_handle) return;
   cancel_send_permit();
   con_handle = 0xffff;
 }
@@ -108,6 +105,12 @@ picoruby_ble_connection_available(void)
 {
   return connection_accepting && picoruby_nimble_ready() && con_handle == 0xffff &&
          !central_connect_pending && central_connect_deferred == 0;
+}
+
+static bool
+connection_held(void)
+{
+  return con_handle != 0xffff;
 }
 
 bool
@@ -135,7 +138,7 @@ picoruby_ble_connection_release_deferred_record(void)
 bool
 picoruby_ble_connection_connect_pending(void)
 {
-  return connection_accepting && central_connect_pending;
+  return central_connect_pending;
 }
 
 bool
@@ -167,10 +170,7 @@ void
 picoruby_ble_connection_reopen(void)
 {
   if (!picoruby_ble_connection_gate_enter()) return;
-  cancel_send_permit();
   con_handle = 0xffff;
-  central_connect_pending = false;
-  central_connect_deferred = 0;
   connection_accepting = true;
   picoruby_ble_connection_gate_exit();
 }
@@ -232,7 +232,7 @@ picoruby_ble_peripheral_service_send_permit(void)
     picoruby_ble_connection_gate_exit();
     return;
   }
-  if (!picoruby_ble_connection_matches(send_permit_handle)) {
+  if (!picoruby_ble_connection_matches(con_handle)) {
     cancel_send_permit();
     picoruby_ble_connection_gate_exit();
     return;
@@ -258,30 +258,22 @@ static uint8_t adv_data_buf[31];
 static uint8_t adv_data_len = 0;
 static bool adv_connectable = false;
 static bool adv_wanted = false;
-static SemaphoreHandle_t adv_mutex;
 
 int
 picoruby_ble_peripheral_setup(void)
 {
   if (connection_gate == NULL) connection_gate = xSemaphoreCreateRecursiveMutex();
   if (connection_gate == NULL) return -1;
-  if (!picoruby_ble_connection_gate_enter()) return -1;
-  cancel_send_permit();
-  picoruby_ble_connection_gate_exit();
-  if (adv_mutex == NULL) adv_mutex = xSemaphoreCreateMutex();
-  if (adv_mutex == NULL) return -1;
-  if (xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) return -1;
   adv_wanted = false;
   adv_data_len = 0;
   adv_connectable = false;
-  xSemaphoreGive(adv_mutex);
   return 0;
 }
 
 static bool
 adv_deferred(void)
 {
-  return !picoruby_ble_power_working() || con_handle != 0xffff;
+  return !picoruby_ble_power_working() || connection_held();
 }
 
 static int
@@ -326,12 +318,7 @@ adv_stop_sdk(void)
 int
 BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len_in, bool connectable)
 {
-  if (adv_data_len_in > sizeof(adv_data_buf)) return -1;
   if (!picoruby_ble_connection_gate_enter()) return -1;
-  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
-    picoruby_ble_connection_gate_exit();
-    return -1;
-  }
   memcpy(adv_data_buf, adv_data, adv_data_len_in);
   adv_data_len = adv_data_len_in;
   adv_connectable = connectable;
@@ -341,7 +328,6 @@ BLE_peripheral_advertise(uint8_t *adv_data, uint8_t adv_data_len_in, bool connec
     adv_stop_sdk();
     rc = adv_start();
   }
-  xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
   return rc == 0 ? 0 : -1;
 }
@@ -350,13 +336,8 @@ void
 BLE_peripheral_stop_advertise(void)
 {
   if (!picoruby_ble_connection_gate_enter()) return;
-  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
-    picoruby_ble_connection_gate_exit();
-    return;
-  }
   adv_wanted = false;
   adv_stop_sdk();
-  xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
 }
 
@@ -364,12 +345,7 @@ void
 picoruby_ble_peripheral_rearm_adv(void)
 {
   if (!picoruby_ble_connection_gate_enter()) return;
-  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
-    picoruby_ble_connection_gate_exit();
-    return;
-  }
   if (adv_wanted && !ble_gap_adv_active()) adv_start();
-  xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
 }
 
@@ -378,12 +354,7 @@ picoruby_ble_peripheral_suspend_adv(void)
 {
   if (!ble_hs_is_enabled()) return;
   if (!picoruby_ble_connection_gate_enter()) return;
-  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
-    picoruby_ble_connection_gate_exit();
-    return;
-  }
   adv_stop_sdk();
-  xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
 }
 
@@ -391,15 +362,10 @@ void
 picoruby_ble_peripheral_resume_adv(void)
 {
   if (!picoruby_ble_connection_gate_enter()) return;
-  if (adv_mutex == NULL || xSemaphoreTake(adv_mutex, portMAX_DELAY) != pdTRUE) {
-    picoruby_ble_connection_gate_exit();
-    return;
-  }
   if (adv_wanted) {
     adv_stop_sdk();
     adv_start();
   }
-  xSemaphoreGive(adv_mutex);
   picoruby_ble_connection_gate_exit();
 }
 
@@ -485,10 +451,7 @@ BLE_peripheral_request_can_send_now_event(void)
     picoruby_ble_connection_gate_exit();
     return;
   }
-  if (!send_permit_pending) {
-    send_permit_pending = true;
-    send_permit_handle = handle;
-  }
+  send_permit_pending = true;
   picoruby_ble_peripheral_service_send_permit();
   picoruby_ble_connection_gate_exit();
 }
