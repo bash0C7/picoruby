@@ -121,12 +121,11 @@ MyScanner.new.scan(scan_type: :passive, timeout_ms: 10000)
 - `add_characteristic(properties, uuid, permissions, initial_value) { block }` - Add characteristic
 - `add_descriptor(properties, uuid, value)` - Add descriptor
 
-
 Profile validation on ESP32:
 
 - Each characteristic declaration must be followed immediately by a value entry whose handle and UUID match the declaration. RBS and the builder allow a `nil` initial value, in which case the builder omits the value entry; such an incomplete declaration makes initialization fail on ESP32. For a dynamic characteristic with an empty initial value, pass an empty String (`""`) and `DYNAMIC`.
-- A zero, duplicate or descending handle, an attribute outside any service or characteristic, an incomplete declaration, and a profile that exceeds the adapter's definition, map or read mirror capacity are rejected before the current registration is stopped. Primary and secondary services, empty services, ordinary descriptors and 16/32/128-bit builder UUIDs remain supported.
-- Reserved GATT UUIDs are classified the same whether written in 16-bit form or in the Bluetooth base 128-bit form (including the CCCD duplicate check, the mapping to the auto-generated CCCD and the Include-service rules). Ordinary vendor UUIDs, String handle_table keys, the UUID bytes of declarations and values, and value properties are not changed.
+- A zero, duplicate or descending handle, an attribute outside any service or characteristic, an incomplete declaration, and a profile that exceeds the adapter's definition, map or read mirror capacity are rejected before the current registration is stopped. Primary and secondary services, empty services, ordinary descriptors and 16/32/128-bit builder UUIDs are accepted.
+- Reserved GATT UUIDs are classified the same whether written in 16-bit form or in the Bluetooth base 128-bit form (including the CCCD duplicate check, the mapping to the auto-generated CCCD and the Include-service rules).
 - An Include-service declaration in a raw profile must come right after its service declaration, before the first characteristic, and must reference a service declared earlier; its end handle must be the included service's last handle, and it carries the included service's UUID only when that UUID is 16-bit. For each `NOTIFY` or `INDICATE` characteristic, a single CCCD descriptor whose initial value is two zero bytes is mapped to the CCCD that NimBLE generates. Duplicate CCCDs, CCCDs of a different length or with a non-zero initial value, and CCCDs on a characteristic without notify or indicate are rejected.
 
 ### BLE::AdvertisingData

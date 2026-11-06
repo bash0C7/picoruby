@@ -16,10 +16,6 @@ class DemoPeripheral < BLE
   CHARACTERISTIC_TEMPERATURE = 0x2A6E
 
   Utils = BLE::Utils
-  READ = BLE::READ
-  WRITE = BLE::WRITE
-  DYNAMIC = BLE::DYNAMIC
-  GATT_PRIMARY_SERVICE_UUID = BLE::GATT_PRIMARY_SERVICE_UUID
 
   def initialize
     @adv_data = BLE::AdvertisingData.build do |a|

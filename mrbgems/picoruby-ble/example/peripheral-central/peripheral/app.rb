@@ -51,7 +51,7 @@ class DemoPeripheral < BLE
 
   def heartbeat_callback
     @counter += 1
-    push_read_value(@temperature_handle, Utils.int16_to_little_endian(2000 + (@counter % 100) * 10))
+    push_read_value(@temperature_handle, Utils.int16_to_little_endian(2000 + @counter * 10))
     if @counter == 10
       if @notification_enabled
         debug_puts "request_can_send_now_event"

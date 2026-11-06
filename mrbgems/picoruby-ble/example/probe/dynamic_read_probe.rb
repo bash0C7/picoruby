@@ -5,9 +5,6 @@ class DynamicReadProbe < BLE
   AD_TYPE_FLAGS = 0x01
   AD_TYPE_NAME  = 0x09
 
-  EVT_DISCONNECT = 0x05
-  EVT_STATE      = 0x60
-
   SERVICE   = 0x181A
   CHAR_READ = 0x2A6E
 
@@ -32,11 +29,11 @@ class DynamicReadProbe < BLE
 
   def packet_callback(event_packet)
     case event_packet.getbyte(0)
-    when EVT_STATE
+    when BTSTACK_EVENT_STATE
       return unless event_packet.getbyte(2) == HCI_STATE_WORKING
       puts "[rdprobe] up, advertising as PBLE-RDPROBE"
       advertise(@adv_data)
-    when EVT_DISCONNECT
+    when HCI_EVENT_DISCONNECTION_COMPLETE
       puts "[rdprobe] disconnected at tick=#{@tick}"
       advertise(@adv_data)
     end

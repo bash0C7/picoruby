@@ -9,7 +9,6 @@ class CentralPathsProbe < BLE
   def initialize
     super(:central)
     @wrote = false
-    @subscribed = false
     @notify_seen = 0
   end
 
@@ -31,16 +30,9 @@ class CentralPathsProbe < BLE
     drive
   end
 
-  BT_BASE_SUFFIX = "\x00\x00\x10\x00\x80\x00\x00\x80\x5F\x9B\x34\xFB"
-
-  def uuid128_for(uuid16)
-    "\x00\x00" + [(uuid16 >> 8) & 0xff, uuid16 & 0xff].pack("CC") + BT_BASE_SUFFIX
-  end
-
   def pick(list, uuid16)
-    want = uuid128_for(uuid16)
     found = nil
-    list.each { |e| found = e if e[:uuid128] == want }
+    list.each { |e| found = e if e[:uuid32] == uuid16 }
     found
   end
 
@@ -74,7 +66,6 @@ class CentralPathsProbe < BLE
     if cccd
       rc = write_characteristic_descriptor_using_descriptor_handle(@conn_handle, cccd[:handle], "\x01\x00")
       puts "[probe] C2 write_characteristic_descriptor_using_descriptor_handle rc=#{rc}"
-      @subscribed = true
     else
       puts "[probe] CCCD descriptor not discovered on the notify characteristic"
       puts "[probe] descriptors=#{nt[:descriptors].inspect}"

@@ -5,9 +5,6 @@ class WriteFloodProbe < BLE
   AD_TYPE_FLAGS = 0x01
   AD_TYPE_NAME  = 0x09
 
-  EVT_DISCONNECT = 0x05
-  EVT_STATE      = 0x60
-
   SERVICE     = 0x181A
   CHAR_NOTIFY = 0x2A6E
   CHAR_WRITE  = 0x2A9F
@@ -39,17 +36,14 @@ class WriteFloodProbe < BLE
 
   def packet_callback(event_packet)
     case event_packet.getbyte(0)
-    when EVT_STATE
+    when BTSTACK_EVENT_STATE
       return unless event_packet.getbyte(2) == HCI_STATE_WORKING
       puts "[flood-probe] up, advertising as PBLE-FLOOD"
       advertise(@adv_data)
-    when EVT_DISCONNECT
+    when HCI_EVENT_DISCONNECTION_COMPLETE
       puts "[flood-probe] disconnected received=#{@received} bytes=#{@bytes}"
       advertise(@adv_data)
     end
-  end
-
-  def heartbeat_callback
   end
 
   def drain
@@ -62,7 +56,6 @@ class WriteFloodProbe < BLE
 
   def start(timeout_ms = nil, stop_state = :no_stop)
     started_at = Machine.board_millis
-    @event_queue.clear
     _event_queue_cleared
     hci_power_control(HCI_POWER_ON)
     while true
@@ -71,8 +64,6 @@ class WriteFloodProbe < BLE
       _event_popped if event
       if event.is_a?(String)
         packet_callback(event)
-      elsif event
-        heartbeat_callback
       end
       drain
     end

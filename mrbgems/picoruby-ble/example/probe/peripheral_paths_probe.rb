@@ -5,8 +5,6 @@ class PeripheralPathsProbe < BLE
   AD_TYPE_FLAGS = 0x01
   AD_TYPE_NAME  = 0x09
 
-  EVT_DISCONNECT   = 0x05
-  EVT_STATE        = 0x60
   EVT_MTU          = 0xB5
   EVT_CAN_SEND_NOW = 0xB7
 
@@ -37,7 +35,6 @@ class PeripheralPathsProbe < BLE
     @write_handle  = db.handle_table[SERVICE][CHAR_WRITE][:value_handle]
     super(:peripheral, db.profile_data)
     @counter = 0
-    @notify_on = false
     @connected = false
     @disconnects = 0
     puts "[probe] handles notify=#{@notify_handle} cccd=#{@cccd_handle} write=#{@write_handle}"
@@ -45,7 +42,7 @@ class PeripheralPathsProbe < BLE
 
   def packet_callback(event_packet)
     case event_packet.getbyte(0)
-    when EVT_STATE
+    when BTSTACK_EVENT_STATE
       return unless event_packet.getbyte(2) == HCI_STATE_WORKING
       puts "[probe] P0 up on #{Utils.bd_addr_to_str(gap_local_bd_addr)}"
       advertise(@adv_data)
@@ -56,9 +53,8 @@ class PeripheralPathsProbe < BLE
       puts "[probe] P3 CAN_SEND_NOW"
       notify @notify_handle
       puts "[probe] P4 notify sent counter=#{@counter}"
-    when EVT_DISCONNECT
+    when HCI_EVENT_DISCONNECTION_COMPLETE
       puts "[probe] P6 DISCONNECTION_COMPLETE"
-      @notify_on = false
       @connected = false
       @disconnects += 1
       if @disconnects >= 2

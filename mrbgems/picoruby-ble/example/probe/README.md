@@ -26,8 +26,7 @@ Deploy the file as `/home/app.rb` (or compile it to `/home/app.mrb` for a board 
 
 - `adv_report_padding_probe.rb` checks that short advertising reports
   (`data_length` 0 or 1) get padded to the 14-byte minimum
-  `ble_advertising_report.rb` requires. It scans actively so short reports
-  arrive often, and includes a negative control (an unpadded 12-byte packet
-  that must raise). On the Pico the active scan call raises
-  (`NotImplementedError` on picoruby, `ArgumentError` on femtoruby), so this
-  probe does not run there.
+  `ble_advertising_report.rb` requires. It scans actively and includes a
+  negative control (an unpadded 12-byte packet that must raise). On the Pico
+  the active scan call raises (`NotImplementedError` on picoruby,
+  `ArgumentError` on femtoruby), so this probe does not run there.

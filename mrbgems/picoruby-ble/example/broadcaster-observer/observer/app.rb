@@ -19,5 +19,4 @@ class DemoObserver < BLE
 end
 
 observer = DemoObserver.new
-observer.debug = true
 observer.scan(stop_state: :no_stop)

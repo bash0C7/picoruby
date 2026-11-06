@@ -1,8 +1,6 @@
 require 'ble'
 
 class AdvProbe < BLE
-  GAP_ADV = 0xda
-
   def initialize
     super(:central)
     @total = 0
@@ -13,7 +11,7 @@ class AdvProbe < BLE
   end
 
   def packet_callback(event_packet)
-    if event_packet.getbyte(0) == GAP_ADV
+    if event_packet.getbyte(0) == GAP_EVENT_ADVERTISING_REPORT
       raw  = event_packet.bytesize
       len1 = event_packet.getbyte(1)
       dlen = event_packet.getbyte(11)
@@ -35,9 +33,6 @@ class AdvProbe < BLE
       @fail += 1
       puts "[probe] PARSE_FAIL #{e.message}"
     end
-  end
-
-  def advertising_report_callback(adv_report)
   end
 
   def heartbeat_callback

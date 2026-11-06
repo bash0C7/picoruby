@@ -23,8 +23,8 @@ class ReinitCentral < BLE
 end
 
 N.times do |i|
-  ReinitPeripheral.new.start(300, :no_stop)
-  ReinitCentral.new.start(300, :no_stop)
+  ReinitPeripheral.new.start(300)
+  ReinitCentral.new.start(300)
   puts "[probe] cycle=#{i} ok"
 end
 

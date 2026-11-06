@@ -2,7 +2,7 @@ require 'ble'
 
 class DemoBroadcaster < BLE
   def initialize
-    super(:broadcaster, nil)
+    super(:broadcaster)
     @counter = 0
   end
 
