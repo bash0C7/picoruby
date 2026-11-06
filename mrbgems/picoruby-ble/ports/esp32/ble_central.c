@@ -32,7 +32,6 @@ BLE_central_set_scan_params(uint8_t scan_type, uint16_t scan_interval, uint16_t 
   scan_params.window = scan_window;
   scan_params.passive = (scan_type == 0);
   scan_params.filter_policy = scanning_filter_policy;
-  scan_params.filter_duplicates = 0;
   return 0;
 }
 
@@ -68,7 +67,7 @@ BLE_central_start_scan(void)
   int rc = 0;
   if (picoruby_ble_power_working() && !picoruby_ble_connection_connect_pending()) {
     rc = scan_start();
-    if (rc == BLE_HS_EALREADY && ble_gap_disc_active()) rc = 0;
+    if (rc == BLE_HS_EALREADY) rc = 0;
   }
   if (rc == 0) scan_wanted = true;
   picoruby_ble_connection_gate_exit();
@@ -129,11 +128,10 @@ BLE_central_gap_connect(const uint8_t *addr, uint8_t addr_type)
   peer.type = addr_type;
   for (int i = 0; i < 6; i++) peer.val[i] = addr[5 - i];
   bool deferred = !picoruby_ble_power_working();
-  bool started = picoruby_nimble_ready() &&
-                 (deferred ? picoruby_ble_connection_defer_connect() : picoruby_ble_connection_begin_connect());
+  bool started = deferred ? picoruby_ble_connection_defer_connect() : picoruby_ble_connection_begin_connect();
   if (!started) {
     uint8_t status = ERROR_CODE_COMMAND_DISALLOWED;
-    if (picoruby_nimble_ready() && !picoruby_ble_connection_connect_pending() &&
+    if (picoruby_nimble_ready() &&
         picoruby_ble_connection_handle_snapshot() != 0xffff &&
         ble_gap_conn_find_by_addr(&peer, NULL) == BLE_HS_ENOTCONN) {
       status = BTSTACK_MEMORY_ALLOC_FAILED;
