@@ -13,19 +13,29 @@ MRuby::CrossBuild.new("r2p2-picoruby-pico2_w#{ENV['PICORB_DEBUG'] ? '-debug' : '
   conf.cc.defines << "MRB_TIMESLICE_TICK_COUNT=10"
 
   conf.cc.defines << "MRB_UTF8_STRING"
-  conf.cc.defines << "MRB_INT64"
-  conf.cc.defines << "MRB_NO_BOXING"
+  # 32-bit word boxing: mrb_value is 4 bytes. An Integer past 31 bits is a
+  # heap RInteger, and one past mrb_int is a Bignum from mruby-bigint.
+  conf.cc.defines << "MRB_INT32"
+  conf.cc.defines << "MRB_WORD_BOXING"
   conf.cc.defines << "MRB_32BIT"
   conf.cc.defines << "USE_WIFI"
   conf.cc.defines << "MRB_USE_CUSTOM_RO_DATA_P"
   conf.cc.defines << "MRB_LINK_TIME_RO_DATA_P"
   conf.cc.defines << "NO_CLOCK_GETTIME=1"
+  # The VM checks the machine stack where C enters it and raises
+  # SystemStackError before the 16KB core 0 stack overruns (a block called
+  # from a C method, a C method that recurses). main.c sets the floor.
+  conf.cc.defines << "MRB_USE_C_STACK_CHECK"
 
-  # Prism arena block size. The 64KB default in mruby-compiler is host-sized;
-  # a parse of a REPL line uses about 4KB on a 32-bit target, so small blocks
-  # waste less of the Estalloc heap. Oversized allocations still fit: the
-  # arena doubles the block for any single allocation that needs more.
-  conf.cc.defines << "MRC_PRISM_ARENA_BLOCK=2048"
+  # Prism arena block size. Prism's 8KB default is host-sized; a parse of a
+  # REPL line uses about 6KB on a 32-bit target (most of it the constant
+  # pool), so 2KB blocks waste less of the Estalloc heap. A larger single
+  # allocation still fits: Prism sizes that block to it.
+  conf.cc.defines << "PM_ARENA_INITIAL_SIZE=2048"
+  # The constant pool starts at 128 entries: the compiler interns the 58
+  # presyms into it at every parse, and a pool that grows to hold them
+  # leaves each outgrown array behind in the arena.
+  conf.cc.defines << "PM_CONSTANT_POOL_MIN_CAPACITY=128"
 
   conf.cc.command = "arm-none-eabi-gcc"
   conf.linker.command = "arm-none-eabi-ld"
@@ -52,6 +62,12 @@ MRuby::CrossBuild.new("r2p2-picoruby-pico2_w#{ENV['PICORB_DEBUG'] ? '-debug' : '
 
   conf.picoruby
 
+  # PICORB_AOT=1: compile the mrblib of the gems that declare `spec.aot`
+  # (json, editor, midibase-mml, keyboard) to cfuncs with picoruby-aot. A
+  # gem is opted out with `conf.gem(core: 'x') { |g| g.aot = false }`.
+  conf.aot if ENV['PICORB_AOT']
+
+  conf.gem gemdir: "#{MRUBY_ROOT}/mrbgems/picoruby-mruby/lib/mruby/mrbgems/mruby-bigint"
   conf.gembox "minimum"
   conf.gembox "core"
   conf.gembox "stdlib"

@@ -14,7 +14,7 @@ mrb_advertise(mrb_state *mrb, mrb_value self)
   } else {
     mrb_raise(mrb, E_TYPE_ERROR, "wrong type of adv_data");
   }
-  return mrb_fixnum_value(0);
+  return mrb_int_value(mrb, 0);
 }
 
 static mrb_value
@@ -23,14 +23,21 @@ mrb_notify(mrb_state *mrb, mrb_value self)
   mrb_int att_handle;
   mrb_get_args(mrb, "i", &att_handle);
   BLE_peripheral_notify((uint16_t)att_handle);
-  return mrb_fixnum_value(0);
+  return mrb_int_value(mrb, 0);
 }
 
 static mrb_value
 mrb_request_can_send_now_event(mrb_state *mrb, mrb_value self)
 {
   BLE_peripheral_request_can_send_now_event();
-  return mrb_fixnum_value(0);
+  return mrb_int_value(mrb, 0);
+}
+
+static mrb_value
+mrb_disconnect(mrb_state *mrb, mrb_value self)
+{
+  BLE_peripheral_disconnect();
+  return mrb_int_value(mrb, 0);
 }
 
 void
@@ -39,6 +46,7 @@ mrb_init_class_BLE_Peripheral(mrb_state *mrb, struct RClass *class_BLE)
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(peripheral_advertise), mrb_advertise, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(notify), mrb_notify, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, class_BLE, MRB_SYM(request_can_send_now_event), mrb_request_can_send_now_event, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, class_BLE, MRB_SYM(disconnect), mrb_disconnect, MRB_ARGS_NONE());
 }
 
 

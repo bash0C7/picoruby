@@ -68,17 +68,17 @@ Two threads, with all mruby access confined to the VM thread.
   single-slot mailbox in shared `src/mruby/ble.c` would otherwise overwrite.
   An oversize packet (larger than the drain buffer) is dropped and logged so
   it cannot wedge the FIFO head and stall every later packet.
-- **The VM thread** drains the FIFO in `ble_scheduler_pump`
-  (`src/mruby/ble.c`), registered through the scheduler-service layer: at
-  every scheduler entry it calls `pble_drain_one` until the FIFO is empty
-  or the pending-event budget is reached, and feeds each packet to
-  `BLE_push_event`. This is the only place `BLE_push_event` runs. The GCD
+- **The VM thread** drains the FIFO in `pump.c`, registered through the
+  scheduler-service layer: at every scheduler entry it calls
+  `pble_drain_one` and feeds each packet to `BLE_push_event` until the FIFO
+  is empty or `BLE_push_event` cannot take one; that packet waits for the
+  next entry. This is the only place `BLE_push_event` runs. The GCD
   heartbeat timer only raises a flag (`pble_take_heartbeat`); the pump
   turns it into `BLE_heartbeat()` on the VM thread.
 - `mrblib/ble.rb` carries no Darwin-specific code and stays
   architecture-neutral. The only shared-code touch is the
-  `PICORB_PLATFORM_DARWIN` pump in `src/mruby/ble.c`, following
-  the platform `#ifdef` convention used by other gems.
+  `pble_attach_vm` call in `src/mruby/ble.c`'s `_init`, following the
+  platform `#ifdef` convention used by other gems.
 - Commands issued from the VM thread (connect, scan, discover, read)
   dispatch the actual CoreBluetooth calls onto `pble.cb` so all
   CoreBluetooth interaction stays on that one queue.
@@ -130,7 +130,7 @@ The port self-compiles when `picoruby-ble` is included on a Darwin host:
 `mrbgem.rake` runs `swift build` to produce the PicoBLEDarwin dylib,
 compiles `ports/darwin/*.c`, adds the linker flags, and defines
 `PICORB_PLATFORM_DARWIN` on `build.darwin?` so the shared C code's
-`#ifdef PICORB_PLATFORM_DARWIN` drain hook activates. The only build
+`#ifdef PICORB_PLATFORM_DARWIN` pump hook activates. The only build
 config addition needed is the gem:
 
 ```ruby

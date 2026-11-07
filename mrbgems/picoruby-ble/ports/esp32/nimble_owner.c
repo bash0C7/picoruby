@@ -21,10 +21,9 @@ static const char *TAG = "prb_ble_evq";
 
 #define EVQ_DEPTH 32
 #define EVQ_PKT_MAX PICORUBY_NIMBLE_EVT_MAX
-#ifndef WRQ_DEPTH
 #define WRQ_DEPTH 32
-#endif
 #define WRQ_PKT_MAX 256
+#define WRQ_RUBY_PENDING_MAX 16
 #define HEARTBEAT_PERIOD_US (1000 * 1000)
 #define SYNC_TIMEOUT_TICKS pdMS_TO_TICKS(2000)
 
@@ -37,6 +36,7 @@ typedef struct {
 static evq_entry_t evq[EVQ_DEPTH];
 static int evq_head = 0;
 static int evq_count = 0;
+static uint32_t evq_gen = 0;
 static portMUX_TYPE evq_mux = portMUX_INITIALIZER_UNLOCKED;
 
 typedef struct {
@@ -58,9 +58,6 @@ static uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static SemaphoreHandle_t sync_sem = NULL;
 static esp_timer_handle_t heartbeat_timer = NULL;
 static int heartbeat_depth = 0; // nest count: only the outermost disable actually stops it
-/* Set by the esp_timer task, taken by the VM thread's scheduler pump.
- * The timer callback must not touch the VM heap (BLE_heartbeat pushes
- * into a Task::Queue), so it only raises this flag. */
 static volatile bool heartbeat_pending = false;
 
 void
@@ -75,6 +72,7 @@ picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, bool coalesce_ad
     int tail = (evq_head + evq_count - 1) % EVQ_DEPTH;
     if (evq[tail].is_adv) slot = tail;
   }
+  if (slot == evq_head) evq_gen++;
   if (slot < 0) {
     if (evq_count == EVQ_DEPTH) {
       if (coalesce_adv) {
@@ -83,6 +81,7 @@ picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, bool coalesce_ad
       }
       evq_head = (evq_head + 1) % EVQ_DEPTH;
       evq_count--;
+      evq_gen++;
     }
     slot = (evq_head + evq_count) % EVQ_DEPTH;
     evq_count++;
@@ -99,8 +98,9 @@ picoruby_nimble_reset_events(void)
   taskENTER_CRITICAL(&evq_mux);
   evq_head = 0;
   evq_count = 0;
+  evq_gen++;
   taskEXIT_CRITICAL(&evq_mux);
-  heartbeat_pending = false; /* no stale beat across a re-init */
+  heartbeat_pending = false;
 }
 
 int
@@ -153,31 +153,40 @@ flush_writes(void)
     handle = wrq[wrq_head].ruby_handle;
     len = wrq[wrq_head].len;
     memcpy(buf, wrq[wrq_head].data, len);
+    taskEXIT_CRITICAL(&wrq_mux);
+    if (BLE_write_pending(handle) >= WRQ_RUBY_PENDING_MAX) return;
+    if (BLE_write_data(handle, buf, len) != 0) return;
+    taskENTER_CRITICAL(&wrq_mux);
     wrq_head = (wrq_head + 1) % WRQ_DEPTH;
     wrq_count--;
     taskEXIT_CRITICAL(&wrq_mux);
-    BLE_write_data(handle, buf, len);
   }
 }
 
-uint16_t
-picoruby_nimble_dequeue_event(uint8_t *out, uint16_t cap)
+static void
+drain_events(void)
 {
-  flush_writes();
-  picoruby_ble_refresh_read_mirrors();
-  evq_entry_t entry;
-  taskENTER_CRITICAL(&evq_mux);
-  if (evq_count == 0) {
+  static uint8_t buf[EVQ_PKT_MAX];
+  for (;;) {
+    uint16_t len;
+    uint32_t gen;
+    taskENTER_CRITICAL(&evq_mux);
+    if (evq_count == 0) {
+      taskEXIT_CRITICAL(&evq_mux);
+      return;
+    }
+    len = evq[evq_head].len;
+    memcpy(buf, evq[evq_head].data, len);
+    gen = evq_gen;
     taskEXIT_CRITICAL(&evq_mux);
-    return 0;
+    if (BLE_push_event(buf, len) != 0) return;
+    taskENTER_CRITICAL(&evq_mux);
+    if (gen == evq_gen) {
+      evq_head = (evq_head + 1) % EVQ_DEPTH;
+      evq_count--;
+    }
+    taskEXIT_CRITICAL(&evq_mux);
   }
-  entry = evq[evq_head];
-  evq_head = (evq_head + 1) % EVQ_DEPTH;
-  evq_count--;
-  taskEXIT_CRITICAL(&evq_mux);
-  if (entry.len > cap) return 0;
-  memcpy(out, entry.data, entry.len);
-  return entry.len;
 }
 
 static void
@@ -187,15 +196,16 @@ heartbeat_timer_cb(void *arg)
   heartbeat_pending = true;
 }
 
-bool
-picoruby_nimble_take_heartbeat(void)
+void
+picoruby_nimble_pump(void)
 {
-  if (!heartbeat_pending) return false;
-  /* Deliberately lossy: a timer fire landing between the read and the
-   * clear coalesces into this beat. At 1 Hz against a scheduler-entry
-   * consumer that can never matter, and the next fire re-arms it. */
-  heartbeat_pending = false;
-  return true;
+  flush_writes();
+  picoruby_ble_refresh_read_mirrors();
+  drain_events();
+  if (heartbeat_pending) {
+    heartbeat_pending = false;
+    if (BLE_heartbeat() != 0) heartbeat_pending = true;
+  }
 }
 
 void
@@ -204,9 +214,7 @@ picoruby_nimble_heartbeat_enable(bool enable)
   if (heartbeat_timer == NULL) return;
   if (enable) {
     if (heartbeat_depth++ > 0) return;
-    esp_err_t err = esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_PERIOD_US);
-    ESP_LOGI(TAG, "esp_timer_start_periodic(heartbeat) -> %s, is_active=%d",
-             esp_err_to_name(err), esp_timer_is_active(heartbeat_timer));
+    esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_PERIOD_US);
   } else {
     if (heartbeat_depth > 0) heartbeat_depth--;
     if (heartbeat_depth > 0) return;
@@ -256,8 +264,7 @@ ensure_timers(void)
       .callback = heartbeat_timer_cb,
       .name = "prb_ble_hb",
     };
-    esp_err_t err = esp_timer_create(&hargs, &heartbeat_timer);
-    ESP_LOGI(TAG, "esp_timer_create(heartbeat) -> %s", esp_err_to_name(err));
+    esp_timer_create(&hargs, &heartbeat_timer);
   }
 }
 
@@ -293,6 +300,7 @@ picoruby_nimble_start(picoruby_nimble_setup_fn setup)
   }
 
   ensure_timers();
+  picoruby_nimble_attach_vm(NULL);
   picoruby_nimble_reset_events();
   picoruby_nimble_reset_writes();
 

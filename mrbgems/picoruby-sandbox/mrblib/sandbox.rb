@@ -4,7 +4,69 @@ class Sandbox
 
   TIMEOUT = 10_000 # 10 sec
 
+  # The task state :SUSPENDED has two sources:
+  # - Sandbox#suspend. This is job control (Ctrl-Z and fg in the shell).
+  #   Nobody is going to resume the task on its own, so wait returns.
+  # - The task suspends itself to wait for an event: JS::Promise#await on
+  #   wasm (issue #545), or Task#suspend with a resume from another task.
+  #   The event resumes the task, so wait keeps waiting, as it does for
+  #   sleep, and resume from outside must not run the task before the
+  #   event (the resume from the event would then hit a later suspend of
+  #   the same task).
+  # @suspended records that suspend was called. wait clears it on entry:
+  # a suspend from an earlier wait (irb suspends the sandbox between
+  # lines) must not end the next one.
+  # @suspended_task records that suspend changed the task state, so
+  # resume undoes only that.
+  # @suspend_pending records a suspend that found the task suspended by
+  # itself. The event resumes the task, and the shell then calls
+  # poll_pending_suspend while it waits for input: the first poll that
+  # finds the task running (or sleeping) suspends it. The task runs
+  # until that poll, one or two timeslices, and a poll runs only while
+  # the shell is at the prompt. A stop flag in mruby-task would settle
+  # this in C: resume would leave a stopped task suspended and record
+  # the resume, and the continue would apply it, as SIGSTOP and SIGCONT
+  # do for a process blocked in read(2). That change is pending for the
+  # long-term design of mruby-task.
+  def suspend
+    @suspended = true
+    if state == :SUSPENDED
+      @suspend_pending = true
+    else
+      suspend_task
+      @suspended_task = true
+    end
+    nil
+  end
+
+  # Returns true when it suspended the task.
+  def poll_pending_suspend
+    return false unless @suspend_pending
+    case state
+    when :SUSPENDED
+      return false
+    when :DORMANT
+      # The task finished before any poll. Nothing to suspend.
+      @suspend_pending = false
+      return false
+    end
+    @suspend_pending = false
+    suspend_task
+    @suspended_task = true
+    true
+  end
+
+  def resume
+    # A resume (fg) before the event: the task waits for the event as it
+    # did before the suspend, and the caller's wait follows it.
+    @suspend_pending = false
+    return false unless @suspended_task
+    @suspended_task = false
+    resume_task
+  end
+
   def wait(timeout: TIMEOUT)
+    @suspended = false
     sleep_ms 5
     signal_self_manage = Machine.pop_signal_self_manage
     loop(timeout, signal_self_manage)
@@ -13,7 +75,12 @@ class Sandbox
   def load_file(path, join: true)
     f = File.open(path, "r")
     begin
-      return nil unless rb = f.read
+      # An empty file has nothing to run, like `require` of an empty file
+      # in CRuby. Return without starting the task: an empty program never
+      # reaches DORMANT on the mruby VM and wait would block forever. A
+      # caller that needs content (an executable) checks the size itself.
+      rb = f.read.to_s
+      return nil if rb.empty?
       # exec_mrb keeps only a pointer into this string's data (it is not copied),
       # so retain it on the instance to keep it alive for the task's lifetime and
       # prevent GC from freeing the bytecode while the task is still running.
@@ -30,9 +97,13 @@ class Sandbox
         end
         execute
       end
-      if join && started
-        wait(timeout: nil)
+      # exec_mrb and execute return false when the VM rejects the bytecode.
+      # Returning quietly here made a broken file look like a program that
+      # ran and printed nothing.
+      unless started
+        raise RuntimeError, "#{path}: failed to load bytecode"
       end
+      wait(timeout: nil) if join
     ensure
       f.close
     end
@@ -42,7 +113,7 @@ class Sandbox
 
   def loop(timeout, signal_self_manage)
     n = 5
-    while self.state != :DORMANT && self.state != :SUSPENDED do
+    while self.state != :DORMANT && !(@suspended && self.state == :SUSPENDED) do
       unless signal_self_manage
         # poll_signal reports the pending signal as a value (:INT / :TSTP / nil)
         # instead of raising Interrupt / SignalException, so Ctrl-C and Ctrl-Z
@@ -58,6 +129,10 @@ class Sandbox
           puts "^C"
           Signal.raise(:INT)
           self.stop
+          # stop does not unwind the task, so an INT handler the program
+          # installed (and did not remove from inside the handler) would
+          # otherwise outlive its frame and fire again on the next Ctrl-C.
+          Signal.trap(:INT, "DEFAULT")
           return true # should be false?
         when :TSTP
           Signal.raise(:TSTP)

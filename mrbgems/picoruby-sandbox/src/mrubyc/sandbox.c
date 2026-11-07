@@ -48,7 +48,15 @@ c_sandbox_error(mrbc_vm *vm, mrbc_value *v, int argc)
   if (sandbox_vm->exception.tt == MRBC_TT_NIL) {
     SET_NIL_RETURN();
   } else {
-    SET_RETURN(sandbox_vm->exception);
+    /* Hand the VM's own reference over to the caller and detach the
+     * exception from the VM.  Sandbox#error consumes the error: a second
+     * call returns nil, and mrbc_vm_end no longer sees an exception that
+     * the caller has already reported.  Leaving it attached made the
+     * shell print the same exception twice, once from Sandbox#error and
+     * once from mrbc_vm_end when the finished job was closed. */
+    mrbc_value error = sandbox_vm->exception;
+    sandbox_vm->exception = mrbc_nil_value();
+    SET_RETURN(error);
   }
 }
 
@@ -177,6 +185,8 @@ reset_vm(mrbc_vm *vm)
   vm->target_class    = mrbc_class_object;
   vm->callinfo_tail   = NULL;
   vm->ret_blk         = NULL;
+  /* An unread exception of the previous run is still referenced here. */
+  mrbc_decref(&vm->exception);
   vm->exception       = mrbc_nil_value();
   vm->flag_preemption = 0;
   vm->flag_stop       = 0;
@@ -322,13 +332,13 @@ mrbc_sandbox_init(mrbc_vm *vm)
 
   mrbc_define_method(vm, class_Sandbox, "compile", c_sandbox_compile);
   mrbc_define_method(vm, class_Sandbox, "compile_from_memory", c_sandbox_compile_from_memory);
-  mrbc_define_method(vm, class_Sandbox, "resume",  c_sandbox_resume);
+  mrbc_define_method(vm, class_Sandbox, "resume_task", c_sandbox_resume);
   mrbc_define_method(vm, class_Sandbox, "execute", c_sandbox_execute);
   mrbc_define_method(vm, class_Sandbox, "state",   c_sandbox_state);
   mrbc_define_method(vm, class_Sandbox, "result",  c_sandbox_result);
   mrbc_define_method(vm, class_Sandbox, "error",   c_sandbox_error);
   mrbc_define_method(vm, class_Sandbox, "stop",    c_sandbox_stop);
-  mrbc_define_method(vm, class_Sandbox, "suspend", c_sandbox_suspend);
+  mrbc_define_method(vm, class_Sandbox, "suspend_task", c_sandbox_suspend);
   mrbc_define_method(vm, class_Sandbox, "free_parser", c_sandbox_free_parser);
   mrbc_define_method(vm, class_Sandbox, "exec_mrb", c_sandbox_exec_mrb);
   mrbc_define_method(vm, class_Sandbox, "exec_mrb_from_memory", c_sandbox_exec_mrb_from_memory);

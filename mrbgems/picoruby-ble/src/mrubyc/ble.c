@@ -1,13 +1,3 @@
-#ifdef PICORB_PLATFORM_ESP32
-#include "../../ports/esp32/nimble_owner.h"
-/* Spelled out: picoruby-mruby/include/hal.h shadows this one on the
-   include path (same workaround as picoruby-irq). */
-#include "../../../picoruby-machine/include/hal.h"
-#if !defined(MRBC_TASK_SCHEDULER_HOOK)
-#error "picoruby-ble on the ESP32 mruby/c build needs MRBC_TASK_SCHEDULER_HOOK: the NimBLE event pump rides the scheduler-service layer"
-#endif
-#endif
-
 static mrbc_value write_values = {.tt = MRBC_TT_NIL};
 static mrbc_value read_values = {.tt = MRBC_TT_NIL};
 static mrbc_value event_queue = {.tt = MRBC_TT_NIL};
@@ -21,52 +11,40 @@ static uint8_t pending_event_count;
 #define NODE_BOX_SIZE 10
 #define VM_REGS_SIZE 110 // can be reduced?
 
-void
+int
 BLE_push_event(uint8_t *data, uint16_t size)
 {
   if (event_queue.tt == MRBC_TT_NIL ||
-      BLE_MAX_PENDING_EVENTS <= pending_event_count) return;
+      BLE_MAX_PENDING_EVENTS <= pending_event_count) return -1;
   mrbc_value event = mrbc_string_new(NULL, (const void *)data, size);
-  if (mrbc_task_queue_push(&event_queue, &event) == MRBC_TASK_QUEUE_PUSH_OK) {
-    pending_event_count++;
+  switch (mrbc_task_queue_push(&event_queue, &event)) {
+    case MRBC_TASK_QUEUE_PUSH_OK:
+    case MRBC_TASK_QUEUE_PUSH_OK_WOKE:
+      pending_event_count++;
+      break;
+    default:
+      break;
   }
   mrbc_decref(&event);
+  return 0;
 }
 
-void
+int
 BLE_heartbeat(void)
 {
   if (event_queue.tt == MRBC_TT_NIL ||
-      BLE_MAX_PENDING_EVENTS <= pending_event_count) return;
+      BLE_MAX_PENDING_EVENTS <= pending_event_count) return -1;
   mrbc_value event = mrbc_symbol_value(mrbc_str_to_symid("heartbeat"));
-  if (mrbc_task_queue_push(&event_queue, &event) == MRBC_TASK_QUEUE_PUSH_OK) {
-    pending_event_count++;
+  switch (mrbc_task_queue_push(&event_queue, &event)) {
+    case MRBC_TASK_QUEUE_PUSH_OK:
+    case MRBC_TASK_QUEUE_PUSH_OK_WOKE:
+      pending_event_count++;
+      break;
+    default:
+      break;
   }
+  return 0;
 }
-
-#ifdef PICORB_PLATFORM_ESP32
-/* NimBLE fills a plain ring buffer from its own FreeRTOS task, and the
- * heartbeat timer only raises a flag. Both cross into the VM heap here,
- * on the VM thread, at every scheduler entry — the mruby/c twin of the
- * pump in src/mruby/ble.c. Without this, the mruby/c build had no
- * dequeue at all and events never left the ring. */
-static void
-ble_scheduler_pump(void *ud)
-{
-  (void)ud;
-  if (event_queue.tt == MRBC_TT_NIL) return;
-  uint8_t buf[PICORUBY_NIMBLE_EVT_MAX];
-  uint16_t n;
-  while (pending_event_count < BLE_MAX_PENDING_EVENTS &&
-         (n = picoruby_nimble_dequeue_event(buf, sizeof(buf))) > 0) {
-    BLE_push_event(buf, n);
-  }
-  if (pending_event_count < BLE_MAX_PENDING_EVENTS &&
-      picoruby_nimble_take_heartbeat()) {
-    BLE_heartbeat();
-  }
-}
-#endif
 
 static void
 c_event_popped(mrbc_vm *vm, mrbc_value *v, int argc)
@@ -90,15 +68,23 @@ BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
   }
   mrbc_value key = mrbc_integer_value(att_handle);
   mrbc_value write_value = mrbc_string_new(NULL, (const void *)data, size);
-  write_values_mutex = true;
   mrbc_value queue = mrbc_hash_get(&write_values, &key);
   if (queue.tt != MRBC_TT_ARRAY) {
     queue = mrbc_array_new(NULL, 4);
     mrbc_hash_set(&write_values, &key, &queue);
   }
   mrbc_array_push(&queue, &write_value);
-  write_values_mutex = false;
   return 0;
+}
+
+int
+BLE_write_pending(uint16_t att_handle)
+{
+  if (write_values.tt != MRBC_TT_HASH) return 0;
+  mrbc_value key = mrbc_integer_value(att_handle);
+  mrbc_value queue = mrbc_hash_get(&write_values, &key);
+  if (queue.tt != MRBC_TT_ARRAY) return 0;
+  return mrbc_array_size(&queue);
 }
 
 int
@@ -118,10 +104,6 @@ BLE_read_data(BLE_read_value_t *read_value)
 static void
 c_pop_write_value(mrbc_vm *vm, mrbc_value *v, int argc)
 {
-  if (write_values_mutex) {
-    SET_NIL_RETURN();
-    return;
-  }
   mrbc_value key = GET_ARG(1);
   mrbc_value queue = mrbc_hash_get(&write_values, &key);
   if (queue.tt != MRBC_TT_ARRAY || mrbc_array_size(&queue) == 0) {
@@ -220,12 +202,6 @@ c__init(mrbc_vm *vm, mrbc_value *v, int argc)
   mrbc_decref(&prev_event_queue);
   mrbc_decref(&prev_write_values);
   mrbc_decref(&prev_read_values);
-#ifdef PICORB_PLATFORM_ESP32
-  /* Adding the same fn/ud twice is a no-op, so a re-init is safe. The
-   * hook is process-global and the VM lives until reset; there is no
-   * teardown to unregister from (same as picoruby-irq). */
-  picorb_scheduler_service_add(ble_scheduler_pump, NULL);
-#endif
 
   Machine_tud_task();
 }

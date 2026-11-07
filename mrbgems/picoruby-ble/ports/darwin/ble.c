@@ -3,8 +3,8 @@
  * Swift backend (CBCentralManager). The 4 shared functions (BLE_push_event/
  * BLE_heartbeat/BLE_write_data/BLE_read_data) are defined in src/mruby/ble.c and
  * MUST NOT be redefined here; the synthesized packets reach BLE_push_event when
- * src/mruby/ble.c's ble_scheduler_pump drains the Swift FIFO (pble_drain_one)
- * on the VM thread at every scheduler entry. */
+ * pump.c drains the Swift FIFO (pble_drain_one) on the VM thread at every
+ * scheduler entry. */
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
@@ -29,9 +29,8 @@ static int current_role = BLE_ROLE_NONE;
  * drives that from a btstack timer and the esp32 port from an esp_timer.
  * CoreBluetooth itself has no such timer, but GCD does: a dispatch source
  * timer, armed once here. Its handler runs on a GCD queue, never on the VM
- * thread, so it only raises a flag; ble_scheduler_pump (src/mruby/ble.c)
- * turns the flag into BLE_heartbeat() on the VM thread — same split as the
- * esp32 port's esp_timer. */
+ * thread, so it only raises a flag; pump.c turns the flag into
+ * BLE_heartbeat() on the VM thread. */
 static atomic_bool heartbeat_pending;
 
 bool

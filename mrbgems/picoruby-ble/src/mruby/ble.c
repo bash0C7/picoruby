@@ -5,31 +5,12 @@
 #include "mruby/array.h"
 #include "task.h"
 
-#ifdef PICORB_PLATFORM_DARWIN
-/* Darwin port: the CoreBluetooth backend (a background queue) fills a
- * thread-safe FIFO in ports/darwin, and the GCD heartbeat timer only
- * raises a flag. ble_scheduler_pump below crosses both into the GC heap
- * on the VM thread at every scheduler entry. */
-#include "mruby/error.h" /* mrb_protect_error for the pump */
-#include "PicoBLEDarwin-Swift.h"
-#include "../../ports/darwin/ble_common.h"
-/* Spelled out: picoruby-mruby/include/hal.h shadows this one on the
-   include path (same workaround as picoruby-irq). */
-#include "../../../picoruby-machine/include/hal.h"
-#if !defined(MRB_USE_TASK_SCHEDULER)
-#error "picoruby-ble on Darwin needs MRB_USE_TASK_SCHEDULER: the CoreBluetooth event pump rides the scheduler-service layer"
-#endif
+#ifdef PICORB_PLATFORM_ESP32
+#include "../../ports/esp32/nimble_owner.h"
 #endif
 
-#ifdef PICORB_PLATFORM_ESP32
-#include "mruby/error.h" /* mrb_protect_error for the pump */
-#include "../../ports/esp32/nimble_owner.h"
-/* Spelled out: picoruby-mruby/include/hal.h shadows this one on the
-   include path (same workaround as picoruby-irq). */
-#include "../../../picoruby-machine/include/hal.h"
-#if !defined(MRB_USE_TASK_SCHEDULER)
-#error "picoruby-ble on ESP32 needs MRB_USE_TASK_SCHEDULER: the NimBLE event pump rides the scheduler-service layer"
-#endif
+#ifdef PICORB_PLATFORM_DARWIN
+#include "../../ports/darwin/ble_common.h"
 #endif
 
 /*
@@ -54,109 +35,32 @@ static uint8_t pending_event_count;
 
 #define BLE_MAX_PENDING_EVENTS 16
 
-void
+int
 BLE_push_event(uint8_t *data, uint16_t size)
 {
   if (_mrb == NULL || mrb_nil_p(event_queue) ||
-      BLE_MAX_PENDING_EVENTS <= pending_event_count) return;
+      BLE_MAX_PENDING_EVENTS <= pending_event_count) return -1;
   int ai = mrb_gc_arena_save(_mrb);
   mrb_value event = mrb_str_new(_mrb, (const char *)data, size);
   if (mrb_task_queue_push(_mrb, event_queue, event) == MRB_TASK_QUEUE_PUSH_OK) {
     pending_event_count++;
   }
   mrb_gc_arena_restore(_mrb, ai);
+  return 0;
 }
 
-void
+int
 BLE_heartbeat(void)
 {
   if (_mrb == NULL || mrb_nil_p(event_queue) ||
-      BLE_MAX_PENDING_EVENTS <= pending_event_count) return;
+      BLE_MAX_PENDING_EVENTS <= pending_event_count) return -1;
   mrb_state *mrb = _mrb;
   if (mrb_task_queue_push(mrb, event_queue, mrb_symbol_value(MRB_SYM(heartbeat))) ==
       MRB_TASK_QUEUE_PUSH_OK) {
     pending_event_count++;
   }
+  return 0;
 }
-
-#if defined(PICORB_PLATFORM_ESP32) || defined(PICORB_PLATFORM_DARWIN)
-/* The radio backend fills a thread-safe queue from its own thread
- * (NimBLE's FreeRTOS task on ESP32, CoreBluetooth's GCD queue on
- * Darwin), and the heartbeat timer only raises a flag. Both cross into
- * the GC heap here, on the VM thread, at every scheduler entry: the
- * queue is drained as far as the pending-event budget allows (the rest
- * stays queued for the next entry instead of being dropped), and the
- * flag becomes BLE_heartbeat(). Registered through the
- * scheduler-service layer — the raw hook slot belongs to
- * picoruby-machine's dispatcher. */
-#ifdef PICORB_PLATFORM_ESP32
-#define BLE_PUMP_EVT_MAX PICORUBY_NIMBLE_EVT_MAX
-static uint16_t
-ble_pump_dequeue(uint8_t *buf, uint16_t cap)
-{
-  return picoruby_nimble_dequeue_event(buf, cap);
-}
-static bool
-ble_pump_take_heartbeat(void)
-{
-  return picoruby_nimble_take_heartbeat();
-}
-#else /* PICORB_PLATFORM_DARWIN */
-/* Ceiling for one synthesized packet; the Swift FIFO drops oversize
- * packets at drain time, so this only has to cover what the builders
- * emit (ADV report or GATT event, both far smaller). */
-#define BLE_PUMP_EVT_MAX 512
-static uint16_t
-ble_pump_dequeue(uint8_t *buf, uint16_t cap)
-{
-  int32_t n = pble_drain_one(buf, (int32_t)cap);
-  return (0 < n) ? (uint16_t)n : 0;
-}
-static bool
-ble_pump_take_heartbeat(void)
-{
-  return pble_take_heartbeat();
-}
-#endif
-
-static mrb_value
-ble_pump_body(mrb_state *mrb, void *ud)
-{
-  (void)mrb;
-  (void)ud;
-  uint8_t buf[BLE_PUMP_EVT_MAX];
-  uint16_t n;
-  while (pending_event_count < BLE_MAX_PENDING_EVENTS &&
-         (n = ble_pump_dequeue(buf, sizeof(buf))) > 0) {
-    BLE_push_event(buf, n);
-  }
-  if (pending_event_count < BLE_MAX_PENDING_EVENTS &&
-      ble_pump_take_heartbeat()) {
-    BLE_heartbeat();
-  }
-  return mrb_nil_value();
-}
-
-static void
-ble_scheduler_pump(mrb_state *mrb, void *ud)
-{
-  (void)ud;
-  /* mrb != _mrb can only mean a second VM's scheduler is calling: the
-   * cached statics belong to _mrb, so do nothing for anyone else. */
-  if (_mrb == NULL || mrb != _mrb || mrb_nil_p(event_queue)) return;
-  /* The hook runs at the top of the scheduler loop, outside any task's
-   * protect frame: an exception escaping here (mrb_str_new can raise
-   * NoMemoryError) would unwind the whole scheduler, not one task.
-   * Contain it — the event being pushed is dropped, which is the same
-   * outcome the pending-event budget already allows. The arena
-   * save/restore pairs with mrb_protect_error rooting its result. */
-  mrb_bool error = FALSE;
-  int ai = mrb_gc_arena_save(mrb);
-  mrb_protect_error(mrb, ble_pump_body, NULL, &error);
-  mrb_gc_arena_restore(mrb, ai);
-  if (error) mrb->exc = NULL;
-}
-#endif
 
 static mrb_value
 mrb_event_popped(mrb_state *mrb, mrb_value self)
@@ -178,26 +82,33 @@ BLE_write_data(uint16_t att_handle, const uint8_t *data, uint16_t size)
   if (att_handle == 0 || size == 0 || _mrb == NULL || mrb_hash_p(write_values) == false) {
     return -1;
   }
-  mrb_value key = mrb_fixnum_value(att_handle);
+  mrb_value key = mrb_int_value(_mrb, att_handle);
   int ai = mrb_gc_arena_save(_mrb);
   mrb_value write_value = mrb_str_new(_mrb, (const char *)data, size);
-  write_values_mutex = true;
   mrb_value queue = mrb_hash_get(_mrb, write_values, key);
   if (!mrb_array_p(queue)) {
     queue = mrb_ary_new_capa(_mrb, 4);
     mrb_hash_set(_mrb, write_values, key, queue);
   }
   mrb_ary_push(_mrb, queue, write_value);
-  write_values_mutex = false;
   mrb_gc_arena_restore(_mrb, ai);
   return 0;
+}
+
+int
+BLE_write_pending(uint16_t att_handle)
+{
+  if (_mrb == NULL || mrb_hash_p(write_values) == false) return 0;
+  mrb_value queue = mrb_hash_get(_mrb, write_values, mrb_int_value(_mrb, att_handle));
+  if (!mrb_array_p(queue)) return 0;
+  return (int)RARRAY_LEN(queue);
 }
 
 int
 BLE_read_data(BLE_read_value_t *read_value)
 {
   if (_mrb == NULL || mrb_hash_p(read_values) == false) return -1;
-  mrb_value value = mrb_hash_get(_mrb, read_values, mrb_fixnum_value(read_value->att_handle));
+  mrb_value value = mrb_hash_get(_mrb, read_values, mrb_int_value(_mrb, read_value->att_handle));
   if (mrb_string_p(value) == false) return -1;
   read_value->data = (uint8_t *)RSTRING_PTR(value);
   read_value->size = (uint16_t)RSTRING_LEN(value);
@@ -208,10 +119,9 @@ BLE_read_data(BLE_read_value_t *read_value)
 static mrb_value
 mrb_pop_write_value(mrb_state *mrb, mrb_value self)
 {
-  if (write_values_mutex) return mrb_nil_value();
   mrb_int handle;
   mrb_get_args(mrb, "i", &handle);
-  mrb_value key = mrb_fixnum_value(handle);
+  mrb_value key = mrb_int_value(mrb, handle);
   mrb_value queue = mrb_hash_get(mrb, write_values, key);
   if (!mrb_array_p(queue) || RARRAY_LEN(queue) == 0) {
     return mrb_nil_value();
@@ -225,7 +135,7 @@ mrb_push_read_value(mrb_state *mrb, mrb_value self)
   mrb_int handle;
   mrb_value read_value;
   mrb_get_args(mrb, "iS", &handle, &read_value);
-  mrb_hash_set(mrb, read_values, mrb_fixnum_value(handle), read_value);
+  mrb_hash_set(mrb, read_values, mrb_int_value(mrb, handle), read_value);
   return read_value;
 }
 
@@ -302,8 +212,11 @@ mrb__init(mrb_state *mrb, mrb_value self)
   write_values = new_write_values;
   read_values = new_read_values;
   pending_event_count = 0;
-#if defined(PICORB_PLATFORM_ESP32) || defined(PICORB_PLATFORM_DARWIN)
-  picorb_scheduler_service_add(mrb, ble_scheduler_pump, NULL);
+#ifdef PICORB_PLATFORM_ESP32
+  picoruby_nimble_attach_vm(mrb);
+#endif
+#ifdef PICORB_PLATFORM_DARWIN
+  pble_attach_vm(mrb);
 #endif
 
   if (release_prev) {
@@ -318,7 +231,7 @@ mrb_hci_power_control(mrb_state *mrb, mrb_value self)
   mrb_int power_mode;
   mrb_get_args(mrb, "i", &power_mode);
   BLE_hci_power_control((uint8_t)power_mode);
-  return mrb_fixnum_value(0);
+  return mrb_int_value(mrb, 0);
 }
 
 static mrb_value
@@ -349,9 +262,6 @@ mrb_picoruby_ble_gem_init(mrb_state* mrb)
 void
 mrb_picoruby_ble_gem_final(mrb_state* mrb)
 {
-#if defined(PICORB_PLATFORM_ESP32) || defined(PICORB_PLATFORM_DARWIN)
-  picorb_scheduler_service_remove(mrb, ble_scheduler_pump, NULL);
-#endif
   if (profile_buf) {
     mrb_free(mrb, profile_buf);
     profile_buf = NULL;

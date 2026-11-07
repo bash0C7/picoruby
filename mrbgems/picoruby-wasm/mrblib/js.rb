@@ -41,7 +41,10 @@ module JS
           break if ev.nil?
           begin
             block.call(ev)
-          rescue => e
+          rescue ::StandardError => e
+            # A bare `rescue` names StandardError, which this scope (under
+            # BasicObject) cannot resolve: the callback's error would turn
+            # into a NameError that ends the task.
             $stderr.puts "Callback #{callback_id}: #{e.class}: #{e.message}"
           end
         end
@@ -83,7 +86,7 @@ module JS
       return unless block
       begin
         block.call(event)
-      rescue => e
+      rescue ::StandardError => e
         $stderr.puts "Callback #{callback_id}: #{e.class}: #{e.message}"
       end
     end
@@ -107,7 +110,7 @@ module JS
         result = ::JS.global._removeEventListener(callback_id)
         _close_event_queue(callback_id) if result
         result
-      rescue
+      rescue ::StandardError
         _close_event_queue(callback_id)
         false
       end
@@ -254,8 +257,12 @@ module JS
     # @return [JS::Object] JS object
     def self.hash_to_js_object(hash)
       js_obj = JS.global.create_object
-      hash.each do |key, val|
-        js_obj[key.to_s.to_sym] = to_js(val)
+      keys = hash.keys
+      i = 0
+      while i < keys.size
+        key = keys[i]
+        js_obj[key.to_s.to_sym] = to_js(hash[key])
+        i += 1
       end
       js_obj
     end
@@ -265,7 +272,11 @@ module JS
     # @return [JS::Object] JS array
     def self.array_to_js_array(array)
       js_array = JS.global.create_array
-      array.each { |item| js_array.push(to_js(item)) }
+      i = 0
+      while i < array.size
+        js_array.push(to_js(array[i]))
+        i += 1
+      end
       js_array
     end
   end

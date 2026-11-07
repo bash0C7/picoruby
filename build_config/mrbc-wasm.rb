@@ -11,6 +11,14 @@ MRuby::CrossBuild.new("mrbc-wasm") do |conf|
 
   conf.cc.defines << 'PICORB_PLATFORM_WASM'
   conf.cc.defines << "PICORB_PLATFORM_POSIX"
+  # mrbc keeps a 64-bit mrb_int (and thus mrc_int) like the host picorbc, so
+  # every target receives the same irep shape. The picoruby-wasm VM runs
+  # MRB_INT32 with mruby-bigint and loads an IREP_TT_INT64 literal as a
+  # Bignum when it does not fit. Without these mrbconf.h would pick
+  # MRB_INT32 on wasm32.
+  conf.cc.defines << "MRB_32BIT"
+  conf.cc.defines << "MRB_INT64"
+  conf.cc.defines << "MRB_NO_BOXING"
 
   conf.cc.command = 'emcc'
   conf.linker.command = 'emcc'

@@ -30,11 +30,19 @@ c_request_can_send_now_event(mrbc_vm *vm, mrbc_value *v, int argc)
   SET_INT_RETURN(0);
 }
 
+static void
+c_disconnect(mrbc_vm *vm, mrbc_value *v, int argc)
+{
+  BLE_peripheral_disconnect();
+  SET_INT_RETURN(0);
+}
+
 void
 mrbc_init_class_BLE_Peripheral(mrbc_vm *vm, mrbc_class *class_BLE)
 {
   mrbc_define_method(vm, class_BLE, "peripheral_advertise", c_advertise);
   mrbc_define_method(vm, class_BLE, "notify", c_notify);
   mrbc_define_method(vm, class_BLE, "request_can_send_now_event", c_request_can_send_now_event);
+  mrbc_define_method(vm, class_BLE, "disconnect", c_disconnect);
 }
 
