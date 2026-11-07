@@ -10,12 +10,7 @@
 #endif
 
 #ifdef PICORB_PLATFORM_DARWIN
-/* Darwin port: the CoreBluetooth backend (a background queue) fills a thread-safe
- * FIFO in ports/darwin. mrb_event_popped (the per-tick VM-thread entry point)
- * drains one packet from it via pble_drain_one into BLE_push_event. Hooked here
- * rather than mrblib/ble.rb so the shared Ruby poll loop stays free of any
- * platform-specific call. */
-#include "PicoBLEDarwin-Swift.h"
+#include "../../ports/darwin/ble_common.h"
 #endif
 
 /*
@@ -71,13 +66,6 @@ static mrb_value
 mrb_event_popped(mrb_state *mrb, mrb_value self)
 {
   if (0 < pending_event_count) pending_event_count--;
-#ifdef PICORB_PLATFORM_DARWIN
-  {
-    uint8_t buf[512];
-    int32_t n = pble_drain_one(buf, (int32_t)sizeof(buf));
-    if (n > 0) BLE_push_event(buf, (uint16_t)n);
-  }
-#endif
   return mrb_nil_value();
 }
 
@@ -226,6 +214,9 @@ mrb__init(mrb_state *mrb, mrb_value self)
   pending_event_count = 0;
 #ifdef PICORB_PLATFORM_ESP32
   picoruby_nimble_attach_vm(mrb);
+#endif
+#ifdef PICORB_PLATFORM_DARWIN
+  pble_attach_vm(mrb);
 #endif
 
   if (release_prev) {
