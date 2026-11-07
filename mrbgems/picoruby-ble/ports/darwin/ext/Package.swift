@@ -28,6 +28,11 @@ let package = Package(
       dependencies: ["PicoBLELifetime"],
       path: "Tests/PicoBLELifetimeTests"
     ),
+    .testTarget(
+      name: "PicoBLEDarwinTests",
+      dependencies: ["PicoBLEDarwin"],
+      path: "Tests/PicoBLEDarwinTests"
+    ),
     .target(
       name: "PicoBLEDarwin",
       dependencies: ["CBLEBridge", "PicoBLELifetime"],
