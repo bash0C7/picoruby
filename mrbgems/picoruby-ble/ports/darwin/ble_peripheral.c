@@ -44,3 +44,8 @@ BLE_peripheral_request_can_send_now_event(void)
 {
   pble_peripheral_request_can_send_now();
 }
+
+void
+BLE_peripheral_disconnect(void)
+{
+}
