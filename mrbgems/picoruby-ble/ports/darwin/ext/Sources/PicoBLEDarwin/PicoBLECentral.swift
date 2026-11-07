@@ -267,11 +267,11 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-    if lifetime.lost(peripheral) { connectionLost() }
+    if lifetime.lost(peripheral) { connectionLost(reason: pbleDisconnectReason(for: error)) }
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-    if lifetime.lost(peripheral) { connectionLost() }
+    if lifetime.lost(peripheral) { connectionLost(reason: pbleDisconnectReason(for: error)) }
   }
 
   /// Cancel a peripheral `lifetime` gave back. The decoder already treats the link as
@@ -288,8 +288,8 @@ final class PBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
   /// so any GATT phase the decoder is waiting on (a read with no didUpdateValueFor,
   /// or discovery that never finalized) is released instead of stalling forever.
   /// The stray 0xA0 is a no-op in :TC_W4_CONNECT / :TC_IDLE. Then drop the tree.
-  private func connectionLost() {
-    push(pbleDisconnect())
+  private func connectionLost(reason: UInt8) {
+    push(pbleDisconnect(reason: reason))
     push(pbleQueryComplete())
     resetTree()
   }

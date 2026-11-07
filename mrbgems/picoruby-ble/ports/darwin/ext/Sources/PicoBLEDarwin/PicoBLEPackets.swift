@@ -9,6 +9,9 @@
 // events (it tracks the connection itself), so those stay zero here.
 // HCI-layer events (0x60/0x3E/0x05/0xB5/0xB7/0xDA) keep their own layouts.
 
+import Foundation
+import CoreBluetooth
+
 // Bluetooth Base UUID suffix (canonical bytes 4..15): -0000-1000-8000-00805F9B34FB.
 private let baseUuidSuffix: [UInt8] = [0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB]
 
@@ -38,7 +41,20 @@ public func pbleConnComplete(_ connHandle: UInt16) -> [UInt8] {
   [0x3E, 0x01, 0x01, 0x00, UInt8(connHandle & 0xff), UInt8((connHandle >> 8) & 0xff)]
 }
 
-public func pbleDisconnect() -> [UInt8] { [0x3E, 0x01, 0x05] }
+public func pbleDisconnect(reason: UInt8) -> [UInt8] { [0x3E, 0x02, 0x05, reason] }
+
+public func pbleDisconnectReason(for error: Error?) -> UInt8 {
+  guard let error else { return 0x16 }
+  let nsError = error as NSError
+  guard nsError.domain == CBErrorDomain, let code = CBError.Code(rawValue: nsError.code) else { return 0x3E }
+  switch code {
+  case .peerRemovedPairingInformation: return 0x06
+  case .encryptionTimedOut: return 0x05
+  case .connectionTimeout: return 0x08
+  case .peripheralDisconnected: return 0x13
+  default: return 0x3E
+  }
+}
 
 /// 16-bit UUID v -> 128-bit canonical (MSB) 0000vvvv-0000-1000-8000-00805F9B34FB.
 public func pbleUuid16Canonical(_ v: UInt16) -> [UInt8] {
