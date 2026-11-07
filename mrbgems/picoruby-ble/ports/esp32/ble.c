@@ -84,6 +84,7 @@ static const char *BLE_TAG = "prb_ble_evq";
 #define RDM_MAX BLE_ATT_ATTR_MAX_LEN
 
 static enum BLE_role_t role = BLE_ROLE_NONE;
+static bool power_on_requested = false;
 static uint8_t power_state = HCI_STATE_OFF;
 static uint8_t central_connect_event[21];
 static uintptr_t central_connect_token;
@@ -91,6 +92,7 @@ static uintptr_t central_connect_serial;
 
 static uint8_t *rdm_pool = NULL;
 static uint16_t rdm_len[RDM_SLOTS];
+static bool     rdm_valid[RDM_SLOTS];
 static bool     rdm_oversize[RDM_SLOTS];
 static int      rdm_used = 0;
 static portMUX_TYPE rdm_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -330,15 +332,22 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
       uint16_t len = e->static_len;
       if (e->mirror_slot >= 0) {
         uint16_t n;
+        bool valid;
         bool oversize;
         taskENTER_CRITICAL(&rdm_mux);
         n = rdm_len[e->mirror_slot];
+        valid = rdm_valid[e->mirror_slot];
         oversize = rdm_oversize[e->mirror_slot];
         if (n > 0) memcpy(rd_tmp, rdm_pool + (size_t)e->mirror_slot * RDM_MAX, n);
         taskEXIT_CRITICAL(&rdm_mux);
         if (oversize) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-        data = rd_tmp;
-        len = n;
+        if (valid) {
+          data = rd_tmp;
+          len = n;
+        } else {
+          data = NULL;
+          len = 0;
+        }
       }
       if (data == NULL || len == 0) return 0;
       if (os_mbuf_append(ctxt->om, data, len) == 0) return 0;
@@ -366,7 +375,13 @@ gatt_access_cb(uint16_t conn, uint16_t attr_handle, struct ble_gatt_access_ctxt 
         }
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
       }
-      ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len);
+      if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len) != 0) {
+        if (picoruby_log_due(PICORUBY_LOG_WRITE_COPY, &s)) {
+          ESP_LOGW(BLE_TAG, "write mbuf copy failed: handle=%u (%lu suppressed)",
+                   (unsigned)e->ruby_handle, (unsigned long)s);
+        }
+        return BLE_ATT_ERR_UNLIKELY;
+      }
       if (picoruby_nimble_enqueue_write(e->ruby_handle, buf, out_len) != 0) {
         return BLE_ATT_ERR_INSUFFICIENT_RES;
       }
@@ -384,6 +399,7 @@ mirror_store(int slot, uint16_t ruby_handle, const uint8_t *data, uint16_t size)
   taskENTER_CRITICAL(&rdm_mux);
   if (!oversize && size > 0) memcpy(rdm_pool + (size_t)slot * RDM_MAX, data, size);
   rdm_len[slot] = oversize ? 0 : size;
+  rdm_valid[slot] = true;
   bool newly_oversize = oversize && !rdm_oversize[slot];
   rdm_oversize[slot] = oversize;
   taskEXIT_CRITICAL(&rdm_mux);
@@ -586,6 +602,7 @@ mirror_assign(attr_map_t *e, uint16_t flags)
   if ((flags & need) != need) return;
   e->mirror_slot = (int16_t)rdm_used++;
   rdm_len[e->mirror_slot] = 0;
+  rdm_valid[e->mirror_slot] = false;
   rdm_oversize[e->mirror_slot] = false;
 }
 
@@ -1262,6 +1279,14 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_NOTIFY_RX: {
       if (role != BLE_ROLE_CENTRAL || !picoruby_ble_connection_matches(event->notify_rx.conn_handle)) break;
       uint16_t vlen = OS_MBUF_PKTLEN(event->notify_rx.om);
+      if (vlen > VALUE_EVENT_DATA_MAX) {
+        uint32_t s;
+        if (picoruby_log_due(PICORUBY_LOG_NOTIFY_RX, &s)) {
+          ESP_LOGW(BLE_TAG, "notification exceeds event capacity: %u (%lu suppressed)",
+                   (unsigned)vlen, (unsigned long)s);
+        }
+        break;
+      }
       uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 4 + VALUE_EVENT_DATA_MAX];
       gatt_event_header(p, event->notify_rx.indication ? EVT_GATT_INDICATION : EVT_GATT_NOTIFICATION,
                         (uint8_t)(GATT_EVENT_PAYLOAD_OFFSET + 2 + vlen), event->notify_rx.conn_handle);
@@ -1287,6 +1312,8 @@ picoruby_ble_gap_event(struct ble_gap_event *event, void *arg)
 static void
 power_set_heartbeat(bool on)
 {
+  if (power_on_requested == on) return;
+  power_on_requested = on;
   picoruby_nimble_heartbeat_enable(on);
 }
 
@@ -1417,6 +1444,7 @@ BLE_init(const uint8_t *profile_data, size_t profile_len, int ble_role)
     return -1;
   }
   role = (enum BLE_role_t)ble_role;
+  power_on_requested = false;
   picoruby_ble_connection_close();
   terminating_clear();
   picoruby_ble_known_links_clear();
@@ -1499,6 +1527,7 @@ BLE_hci_power_control(uint8_t power_mode)
     bool gated = picoruby_ble_connection_gate_enter();
     power_reset();
     if (gated) picoruby_ble_connection_gate_exit();
+    power_on_requested = false;
     picoruby_nimble_halting_watchdog_stop();
     picoruby_nimble_heartbeat_enable(false);
     return power_mode == 0 ? 0 : BLE_POWER_CONTROL_NOT_READY;
@@ -1760,6 +1789,10 @@ read_attr_cb(uint16_t conn, const struct ble_gatt_error *error,
   gatt_request_complete(conn, error->status);
   if (error->status == 0) {
     uint16_t vlen = OS_MBUF_PKTLEN(attr->om);
+    if (vlen > VALUE_EVENT_DATA_MAX) {
+      synth_query_complete(conn, att_status(BLE_HS_EMSGSIZE));
+      return 0;
+    }
     uint8_t p[GATT_EVENT_PAYLOAD_OFFSET + 4 + VALUE_EVENT_DATA_MAX];
     gatt_event_header(p, EVT_GATT_CHARACTERISTIC_VALUE_QUERY_RESULT,
                       (uint8_t)(GATT_EVENT_PAYLOAD_OFFSET + 2 + vlen), conn);

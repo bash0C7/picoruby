@@ -160,6 +160,7 @@ class BLE
         _check_control_fault
         heartbeat_callback
       end
+      _check_registration(event_queue)
       _check_control_fault
     end
     total_timeout_ms = Machine.board_millis - started_at

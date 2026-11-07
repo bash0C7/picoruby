@@ -67,6 +67,7 @@ typedef struct {
 static evq_entry_t *evq = NULL;
 static int evq_head = 0;
 static int evq_count = 0;
+static uint32_t evq_gen = 0;
 static uint32_t evq_dropped = 0;
 static portMUX_TYPE evq_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t control_fault;
@@ -102,6 +103,7 @@ static bool lifecycle_busy = false;
 static portMUX_TYPE owner_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static esp_timer_handle_t heartbeat_timer = NULL;
 static esp_timer_handle_t halting_timer = NULL;
+static int heartbeat_depth = 0;
 static bool heartbeat_pending = false;
 
 #define LOG_LIMIT_INTERVAL_US 1000000
@@ -114,6 +116,7 @@ static const char *const log_site_name[PICORUBY_LOG_SITE_COUNT] = {
   "ATT security check without connection",
   "read response append failure",
   "write exceeding capacity",
+  "write mbuf copy failure",
   "late connection termination failure",
   "advertising report over 31 bytes",
   "notification receive failure",
@@ -123,6 +126,7 @@ static const char *const log_site_name[PICORUBY_LOG_SITE_COUNT] = {
   "advertising start failure",
   "notify failure",
   "event queue full",
+  "event dropped, queue not ready",
   "write queue full",
   "CCCD value replaced before delivery",
   "write delivery failure",
@@ -211,7 +215,20 @@ reserve_event_storage(void)
 picoruby_nimble_event_result_t
 picoruby_nimble_enqueue_event(const uint8_t *pkt, uint16_t len, picoruby_nimble_event_class_t event_class)
 {
+  if (len > EVQ_PKT_MAX) {
+    ESP_LOGW(TAG, "event exceeds queue capacity: %u", (unsigned)len);
+    return PICORUBY_NIMBLE_EVENT_TOO_LARGE;
+  }
   taskENTER_CRITICAL(&evq_mux);
+  if (evq == NULL) {
+    taskEXIT_CRITICAL(&evq_mux);
+    uint32_t s;
+    if (picoruby_log_due(PICORUBY_LOG_EVENT_NOT_READY, &s)) {
+      ESP_LOGW(TAG, "event dropped, queue not ready: len=%u (%lu suppressed)",
+               (unsigned)len, (unsigned long)s);
+    }
+    return PICORUBY_NIMBLE_EVENT_NOT_READY;
+  }
   int limit = event_class == PICORUBY_NIMBLE_EVENT_CONTROL ? EVQ_DEPTH : EVQ_DATA_DEPTH;
   if (evq_count >= limit) {
     evq_dropped++;
@@ -238,6 +255,7 @@ picoruby_nimble_reset_events(void)
   taskENTER_CRITICAL(&evq_mux);
   evq_head = 0;
   evq_count = 0;
+  evq_gen++;
   taskEXIT_CRITICAL(&evq_mux);
   taskENTER_CRITICAL(&owner_state_mux);
   heartbeat_pending = false;
@@ -247,6 +265,10 @@ picoruby_nimble_reset_events(void)
 static int
 wrq_enqueue(uint16_t ruby_handle, const uint8_t *data, uint16_t len, bool cccd)
 {
+  if (ruby_handle == 0 || len == 0 || len > WRQ_PKT_MAX) {
+    ESP_LOGW(TAG, "write rejected: handle=%u len=%u", (unsigned)ruby_handle, (unsigned)len);
+    return -1;
+  }
   taskENTER_CRITICAL(&wrq_mux);
   if (cccd) {
     for (int slot = wrq_head; slot >= 0; slot = wrq[slot].next) {
@@ -328,6 +350,7 @@ drain_events(void)
   static uint8_t buf[EVQ_PKT_MAX];
   for (;;) {
     uint16_t len;
+    uint32_t gen;
     taskENTER_CRITICAL(&evq_mux);
     if (evq == NULL || evq_count == 0) {
       taskEXIT_CRITICAL(&evq_mux);
@@ -335,11 +358,14 @@ drain_events(void)
     }
     len = evq[evq_head].len;
     memcpy(buf, evq[evq_head].data, len);
+    gen = evq_gen;
     taskEXIT_CRITICAL(&evq_mux);
     if (BLE_push_event(buf, len) != 0) return;
     taskENTER_CRITICAL(&evq_mux);
-    evq_head = (evq_head + 1) % EVQ_DEPTH;
-    evq_count--;
+    if (gen == evq_gen) {
+      evq_head = (evq_head + 1) % EVQ_DEPTH;
+      evq_count--;
+    }
     taskEXIT_CRITICAL(&evq_mux);
   }
 }
@@ -388,9 +414,7 @@ static void
 heartbeat_timer_cb(void *arg)
 {
   (void)arg;
-  taskENTER_CRITICAL(&owner_state_mux);
-  heartbeat_pending = true;
-  taskEXIT_CRITICAL(&owner_state_mux);
+  heartbeat_mark_pending();
 }
 
 static void
@@ -436,23 +460,34 @@ void
 picoruby_nimble_heartbeat_enable(bool enable)
 {
   if (heartbeat_timer == NULL) return;
-  if (!enable) {
-    esp_timer_stop(heartbeat_timer);
-    return;
-  }
+  bool start_timer = false;
+  bool stop_timer = false;
   taskENTER_CRITICAL(&owner_state_mux);
-  bool ready = synced && !host_stop_pending;
+  bool ready = started && synced && !host_stop_pending && !cleanup_blocked && !lifecycle_busy;
+  if (enable) {
+    if (ready && heartbeat_depth++ == 0) start_timer = true;
+  } else if (!ready) {
+    heartbeat_depth = 0;
+    stop_timer = true;
+  } else {
+    if (heartbeat_depth > 0) heartbeat_depth--;
+    if (heartbeat_depth == 0) stop_timer = true;
+  }
   taskEXIT_CRITICAL(&owner_state_mux);
-  if (ready) {
+  if (start_timer) {
     esp_err_t err = esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_PERIOD_US);
     if (err != ESP_OK) ESP_LOGE(TAG, "heartbeat timer start failed: %d", err);
   }
+  if (stop_timer) esp_timer_stop(heartbeat_timer);
 }
 
 static void
 heartbeat_force_stop(void)
 {
-  esp_timer_stop(heartbeat_timer);
+  taskENTER_CRITICAL(&owner_state_mux);
+  heartbeat_depth = 0;
+  taskEXIT_CRITICAL(&owner_state_mux);
+  if (heartbeat_timer) esp_timer_stop(heartbeat_timer);
 }
 
 static void
@@ -742,7 +777,7 @@ bool
 picoruby_nimble_ready(void)
 {
   taskENTER_CRITICAL(&owner_state_mux);
-  bool value = started && synced && !host_stop_pending && !lifecycle_busy;
+  bool value = started && synced && !host_stop_pending && !cleanup_blocked && !lifecycle_busy;
   taskEXIT_CRITICAL(&owner_state_mux);
   return value && picoruby_nimble_control_fault() == 0;
 }

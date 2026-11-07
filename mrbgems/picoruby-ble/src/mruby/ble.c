@@ -80,6 +80,7 @@ mrb_power_control_registration(mrb_state *mrb, mrb_value self)
   mrb_value expected;
   mrb_int mode;
   mrb_get_args(mrb, "oi", &expected, &mode);
+  if (mode < 0 || mode > 1) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid BLE power mode");
   if (!mrb_ble_active_owner(mrb, self) || !mrb_obj_eq(mrb, expected, event_queue)) {
     return mrb_false_value();
   }
@@ -93,7 +94,7 @@ mrb_power_control_registration(mrb_state *mrb, mrb_value self)
 static bool
 ble_event_queue_has_capacity(void)
 {
-  if (_mrb == NULL) return false;
+  if (_mrb == NULL || !mrb_data_p(event_queue)) return false;
   return pending_event_count < BLE_MAX_PENDING_EVENTS;
 }
 
@@ -140,6 +141,9 @@ mrb_event_queue_cleared(mrb_state *mrb, mrb_value self)
   mrb_get_args(mrb, "|o", &expected);
   mrb_ble_check_active_owner(mrb, self);
   if (!mrb_obj_eq(mrb, expected, event_queue)) mrb_raise(mrb, E_RUNTIME_ERROR, "BLE owner registration changed");
+  if (_mrb != mrb || !mrb_data_p(event_queue)) {
+    mrb_raise(mrb, E_TYPE_ERROR, "BLE event queue is not initialized");
+  }
   mrb_funcall_id(mrb, event_queue, MRB_SYM(clear), 0);
   pending_event_count = 0;
   BLE_events_cleared();
@@ -184,7 +188,7 @@ mrb_pop_write_value(mrb_state *mrb, mrb_value self)
   mrb_ble_check_active_owner(mrb, self);
   mrb_int handle;
   mrb_get_args(mrb, "i", &handle);
-  if (handle == 0) return mrb_nil_value();
+  if (handle <= 0 || handle > UINT16_MAX) return mrb_nil_value();
   mrb_value key = mrb_int_value(mrb, handle);
   mrb_value queue = mrb_hash_get(mrb, write_values, key);
   if (!mrb_array_p(queue) || RARRAY_LEN(queue) == 0) {
@@ -312,6 +316,7 @@ static mrb_value
 mrb_control_fault(mrb_state *mrb, mrb_value self)
 {
   mrb_ble_check_active_owner(mrb, self);
+  mrb_get_args(mrb, "");
   return mrb_int_value(mrb, BLE_control_fault());
 }
 
