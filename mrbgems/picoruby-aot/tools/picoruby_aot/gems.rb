@@ -10,10 +10,10 @@ module PicorubyAot
   class GemInfo
     attr_reader :name, :dir, :require_name, :rbfiles, :sigfiles, :deps
 
-    def initialize(dir)
+    def initialize(dir, name = nil)
       @dir = File.expand_path(dir)
       rake = File.exist?(rakefile) ? File.read(rakefile) : ""
-      @name = rake[/Specification\.new[\s(]*['"]([^'"]+)/, 1] || File.basename(@dir)
+      @name = name || rake[/Specification\.new[\s(]*['"]([^'"]+)/, 1] || File.basename(@dir)
       @require_name = rake[/require_name\s*=\s*['"]([^'"]+)/, 1] || @name.sub(/\Apicoruby-/, "")
       @rbfiles = Dir.glob("#{@dir}/mrblib/**/*.rb").sort
       @sigfiles = Dir.glob("#{@dir}/sig/**/*.rbs").sort
@@ -46,9 +46,9 @@ module PicorubyAot
     end
 
     # The gem in +dir+, added if the mrbgems glob did not find it.
-    def add(dir)
-      g = GemInfo.new(dir)
-      @gems[g.name] ||= g
+    def add(dir, name = nil)
+      g = GemInfo.new(dir, name)
+      @gems[g.name] = g
     end
 
     def [](name)
