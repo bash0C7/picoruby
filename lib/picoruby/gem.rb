@@ -64,7 +64,7 @@ module MRuby
         file aot_c => rbfiles + sigfiles + tool_srcs + ["#{dir}/mrbgem.rake", deps_file] + build.aot_spinel_prereqs do |t|
           _pp "AOT", aot_c.relative_path
           mkdir_p aot_dir
-          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem "#{dir}" --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps "#{deps_file}"]
+          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem #{name} --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps "#{deps_file}"]
         end
         aot_rbfiles.each { |f| file f => aot_c }
         cc.include_paths << "#{MRUBY_ROOT}/mrbgems/picoruby-aot/include"

@@ -20,7 +20,7 @@ require_relative "picoruby_aot/generate"
 mruby_root = File.expand_path("../../..", __dir__)
 opts = { workspace: "#{mruby_root}/build/aot", exclude: [], include_widened: false }
 OptionParser.new do |o|
-  o.on("--gem NAME") { |v| opts[:gem] = v }
+  o.on("--gem GEM") { |v| opts[:gem] = v }
   o.on("--workspace DIR") { |v| opts[:workspace] = v }
   o.on("--types JSON") { |v| opts[:types] = v }
   o.on("--out-c FILE") { |v| opts[:out_c] = v }
@@ -41,7 +41,13 @@ build_gems =
       graph.add(dir, name)
     end
   end
-gem = graph.add(opts[:gem])
+gem =
+  if File.directory?(opts[:gem])
+    dir = File.expand_path(opts[:gem])
+    graph.gems.values.find { |g| g.dir == dir } || graph.add(dir)
+  else
+    graph[opts[:gem]]
+  end
 
 json =
   if opts[:types]
