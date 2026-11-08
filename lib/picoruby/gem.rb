@@ -48,7 +48,7 @@ module MRuby
         # keeps the caller in the irep), so the set is an input of the C:
         # the file changes only when the set does, and the C depends on it.
         deps_file = "#{aot_dir}/deps.txt"
-        deps_text = -> { build.gems.map(&:name).sort.join("\n") + "\n" }
+        deps_text = -> { build.gems.map { |g| "#{g.name}\t#{g.dir}" }.sort.join("\n") + "\n" }
         deps_task = file deps_file do
           mkdir_p aot_dir
           File.write(deps_file, deps_text.call)
@@ -64,8 +64,7 @@ module MRuby
         file aot_c => rbfiles + sigfiles + tool_srcs + ["#{dir}/mrbgem.rake", deps_file] + build.aot_spinel_prereqs do |t|
           _pp "AOT", aot_c.relative_path
           mkdir_p aot_dir
-          deps = File.read(deps_file).split("\n").join(",")
-          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem "#{dir}" --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps #{deps}]
+          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem "#{dir}" --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps "#{deps_file}"]
         end
         aot_rbfiles.each { |f| file f => aot_c }
         cc.include_paths << "#{MRUBY_ROOT}/mrbgems/picoruby-aot/include"

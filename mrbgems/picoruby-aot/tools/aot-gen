@@ -28,12 +28,19 @@ OptionParser.new do |o|
   o.on("--manifest FILE") { |v| opts[:manifest] = v }
   o.on("--exclude LIST") { |v| opts[:exclude].concat(v.split(",")) }
   o.on("--include-widened") { opts[:include_widened] = true }
-  o.on("--deps LIST") { |v| opts[:deps] = v.split(",") }
+  o.on("--deps FILE") { |v| opts[:deps] = v }
   o.on("--spinel PATH") { |v| ENV["SPINEL"] = v }
 end.parse!
 abort "aot-gen: --gem, --out-c and --out-rb are required" unless opts[:gem] && opts[:out_c] && opts[:out_rb]
 
 graph = PicorubyAot::GemGraph.new("#{mruby_root}/mrbgems")
+build_gems =
+  if opts[:deps]
+    File.read(opts[:deps]).split("\n").map do |line|
+      name, dir = line.split("\t", 2)
+      graph.add(dir, name)
+    end
+  end
 gem = graph.add(opts[:gem])
 
 json =
@@ -68,7 +75,7 @@ typemap = PicorubyAot::TypeMap.new(json)
 # waits the target can never meet.
 deps =
   if opts[:deps]
-    opts[:deps].map { |n| graph.gems[n] }.compact
+    build_gems
   else
     graph.closure(gem.name)
   end
