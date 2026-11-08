@@ -45,7 +45,9 @@ module PicorubyAot
       end
     end
 
-    # The gem in +dir+, added if the mrbgems glob did not find it.
+    # The gem in +dir+, named +name+ or after its Specification.new. It
+    # replaces a gem of the same name, so the gem the build uses wins over
+    # the in-tree one the mrbgems glob found.
     def add(dir, name = nil)
       g = GemInfo.new(dir, name)
       @gems[g.name] = g
@@ -59,8 +61,9 @@ module PicorubyAot
       @gems.values.each(&blk)
     end
 
-    # The gem and every PicoRuby gem it depends on, transitively.
-    # Upstream mruby gems (mruby-*) are not in the graph and are skipped.
+    # The gem and every gem in the graph it depends on, transitively.
+    # A dependency not in the graph is skipped: mruby-* gems are in it only
+    # when the build's gems were added.
     def closure(name)
       seen = Set.new
       queue = [name]

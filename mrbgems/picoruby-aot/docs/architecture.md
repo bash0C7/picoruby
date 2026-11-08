@@ -510,9 +510,11 @@ GC, the method lookups before the direct calls and the DOM calls.
 
 ## 6. Tools and layout
 
-- `tools/aot-gen --gem DIR --out-c FILE --out-rb DIR [--manifest FILE]
-  [--exclude A#b,C.d] [--include-widened] [--types JSON]`: the generator
-  the build calls. It runs Spinel itself unless `--types` is given
+- `tools/aot-gen --gem GEM --out-c FILE --out-rb DIR [--manifest FILE]
+  [--exclude A#b,C.d] [--include-widened] [--deps FILE] [--types JSON]`:
+  the generator the build calls. GEM is the gem's name or its directory
+  (inside `mrbgems/` or not), and `--deps` the build's `aot/deps.txt`.
+  It runs Spinel itself unless `--types` is given
   (`SPINEL=/path/to/spinel`, or `spinel` on PATH).
 - `tools/aot-analyze [--all | GEM...]`: run Spinel over gems and report
   how many defs are fully typed.

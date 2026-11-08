@@ -1,16 +1,18 @@
 #!/usr/bin/env ruby
 # Generate the AOT C and the remaining Ruby for one gem.
 #
-#   tools/aot-gen --gem DIR --workspace DIR --out-c FILE --out-rb DIR \
+#   tools/aot-gen --gem GEM --workspace DIR --out-c FILE --out-rb DIR \
 #                 [--manifest FILE] [--exclude A#b,C.d] [--include-widened] \
-#                 [--deps a,b,c] [--types JSON]
+#                 [--deps FILE] [--types JSON]
 #
 # --gem is the gem's directory, inside mrbgems/ or not (a build config's
-# gemdir:, git: or github:).
+# gemdir:, git: or github:), or the gem's name.
 # Without --types the tool runs spinel itself (SPINEL=/path/to/spinel, or
-# `spinel` on PATH) and keeps its output under the workspace. --deps names
-# the gems of the build (the wait search looks into their defs); without
-# it the static closure of the mrbgem.rake dependencies serves.
+# `spinel` on PATH) and keeps its output under the workspace. --deps is a
+# file with one `name<TAB>dir` line per gem of the build: they join the
+# graph, a gem the build uses replacing an in-tree one of the same name,
+# and the wait search looks into their defs; without it the static
+# closure of the mrbgem.rake dependencies serves.
 
 require "optparse"
 require_relative "picoruby_aot/deps"
