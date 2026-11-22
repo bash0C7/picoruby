@@ -10,14 +10,14 @@ module PicorubyAot
   class GemInfo
     attr_reader :name, :dir, :require_name, :rbfiles, :sigfiles, :deps
 
-    def initialize(dir)
+    def initialize(dir, name: nil, deps: nil)
       @dir = File.expand_path(dir)
-      @name = File.basename(@dir)
+      @name = name || File.basename(@dir)
       rake = File.exist?(rakefile) ? File.read(rakefile) : ""
       @require_name = rake[/require_name\s*=\s*['"]([^'"]+)/, 1] || @name.sub(/\Apicoruby-/, "")
       @rbfiles = Dir.glob("#{@dir}/mrblib/**/*.rb").sort
       @sigfiles = Dir.glob("#{@dir}/sig/**/*.rbs").sort
-      @deps = rake.scan(/add_dependency\s+['"]([^'"]+)['"]/).flatten.uniq
+      @deps = deps || rake.scan(/add_dependency\s+['"]([^'"]+)['"]/).flatten.uniq
     end
 
     def rakefile
@@ -42,6 +42,22 @@ module PicorubyAot
       Dir.glob("#{@mrbgems_dir}/picoruby-*/").sort.each do |d|
         g = GemInfo.new(d)
         @gems[g.name] = g
+      end
+    end
+
+    # The gems of the build ({"name", "dir", "deps"} each) that live outside
+    # mrbgems/ join the graph, replacing an in-tree gem of the same name.
+    # Returns the names of all of them.
+    def add_build_gems(gems)
+      gems.map do |e|
+        name = e["name"]
+        dir = File.expand_path(e["dir"])
+        # Not the ones under mrbgems/: an in-tree gem stays as the glob and
+        # the reading of its mrbgem.rake found it, and the upstream mruby
+        # gems, absent from the graph today, stay out of the wait search.
+        next name if dir.start_with?("#{@mrbgems_dir}/")
+        @gems[name] = GemInfo.new(dir, name: name, deps: e["deps"])
+        name
       end
     end
 

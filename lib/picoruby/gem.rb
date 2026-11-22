@@ -1,3 +1,5 @@
+require "json"
+
 module MRuby
   module Gem
     class Specification
@@ -43,12 +45,19 @@ module MRuby
         exclude << " --include-widened" if aot_include_widened
         workspace = "#{build.build_dir}/aot-workspace"
         manifest = "#{aot_dir}/manifest.json"
-        # The gems of this build, one per line. The generator's wait search
-        # looks into their defs (a call into a gem that suspends the task
-        # keeps the caller in the irep), so the set is an input of the C:
-        # the file changes only when the set does, and the C depends on it.
-        deps_file = "#{aot_dir}/deps.txt"
-        deps_text = -> { build.gems.map(&:name).sort.join("\n") + "\n" }
+        # The gems of this build: name, directory and the dependencies the
+        # build resolved. The generator's wait search looks into their defs
+        # (a call into a gem that suspends the task keeps the caller in the
+        # irep), so the set is an input of the C: the file changes only
+        # when the set does, and the C depends on it. A name alone would
+        # not do: a gem outside mrbgems/ is found by its directory only.
+        deps_file = "#{aot_dir}/deps.json"
+        deps_text = -> {
+          gems = build.gems.sort_by(&:name).map do |g|
+            { "name" => g.name, "dir" => g.dir, "deps" => g.dependencies.map { |d| d[:gem] } }
+          end
+          JSON.pretty_generate(gems) + "\n"
+        }
         deps_task = file deps_file do
           mkdir_p aot_dir
           File.write(deps_file, deps_text.call)
@@ -64,8 +73,7 @@ module MRuby
         file aot_c => rbfiles + sigfiles + tool_srcs + ["#{dir}/mrbgem.rake", deps_file] + build.aot_spinel_prereqs do |t|
           _pp "AOT", aot_c.relative_path
           mkdir_p aot_dir
-          deps = File.read(deps_file).split("\n").join(",")
-          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem #{name} --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps #{deps}]
+          sh %Q[SPINEL="#{build.aot_spinel}" ruby "#{tool}" --gem #{name} --workspace "#{workspace}" --out-c "#{aot_c}" --out-rb "#{aot_dir}/rb" --manifest "#{manifest}"#{exclude} --deps-file "#{deps_file}"]
         end
         aot_rbfiles.each { |f| file f => aot_c }
         cc.include_paths << "#{MRUBY_ROOT}/mrbgems/picoruby-aot/include"
