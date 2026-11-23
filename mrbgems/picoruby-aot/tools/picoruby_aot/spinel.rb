@@ -56,13 +56,20 @@ module PicorubyAot
     ENGINE = "mruby"
 
     # The copy of mrblib file `f` of gem `g` that Spinel reads: the source
-    # with its RUBY_ENGINE branches folded, under src/<gem>/, refreshed when
-    # the source is newer. Positions in the copy are positions in the source.
+    # with its RUBY_ENGINE branches folded, under src/<gem>/. Positions in
+    # the copy are positions in the source.
     def copy_of(g, f)
       copy = File.join(@root, "src", g.name, f.sub(g.dir + "/", ""))
-      unless File.exist?(copy) && File.mtime(copy) >= File.mtime(f)
+      folded = EngineFold.fold(File.read(f), engine: ENGINE)
+      # Compared by content, not by mtime: a gem of the same name may now
+      # come from another directory, whose source can be older than the
+      # copy. And not written in place: under `rake -m` another aot-gen
+      # may be reading the copy.
+      unless File.exist?(copy) && File.read(copy) == folded
         FileUtils.mkdir_p(File.dirname(copy))
-        File.write(copy, EngineFold.fold(File.read(f), engine: ENGINE))
+        tmp = "#{copy}.#{Process.pid}.tmp"
+        File.write(tmp, folded)
+        File.rename(tmp, copy)
       end
       copy
     end
