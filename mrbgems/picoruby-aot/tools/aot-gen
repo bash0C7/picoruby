@@ -45,7 +45,7 @@ json =
     JSON.parse(File.read(opts[:types]))
   else
     ws = PicorubyAot::Workspace.new(graph, opts[:workspace])
-    ws.prepare unless Dir.exist?(ws.feature_root(:stubs))
+    ws.ensure_features
     entry = ws.entry_file(gem.name)
     out = "#{ws.root}/out/#{gem.name}.types.json"
     FileUtils.mkdir_p(File.dirname(out))
