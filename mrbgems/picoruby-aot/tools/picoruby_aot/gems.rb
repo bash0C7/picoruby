@@ -45,17 +45,20 @@ module PicorubyAot
       end
     end
 
-    # The gems of the build ({"name", "dir", "deps"} each) that live outside
-    # mrbgems/ join the graph, replacing an in-tree gem of the same name.
-    # Returns the names of all of them.
+    # The gems of the build ({"name", "dir", "deps"} each) take their place
+    # in the graph: a gem outside mrbgems/ joins it, and a gem already there
+    # is replaced, by another directory or by itself with the dependencies
+    # the build resolved. Returns the names of all of them.
     def add_build_gems(gems)
       gems.map do |e|
         name = e["name"]
         dir = File.expand_path(e["dir"])
-        # Not the ones under mrbgems/: an in-tree gem stays as the glob and
-        # the reading of its mrbgem.rake found it, and the upstream mruby
-        # gems, absent from the graph today, stay out of the wait search.
-        next name if dir.start_with?("#{@mrbgems_dir}/")
+        # Not the upstream mruby gems (under mrbgems/, absent from the
+        # graph): they stay out of the wait search. And an in-tree gem does
+        # not keep the dependencies read from its mrbgem.rake: those name
+        # every branch, and a branch this build does not take would bring
+        # into the closure the RBS of a gem the target does not carry.
+        next name if dir.start_with?("#{@mrbgems_dir}/") && !@gems.key?(name)
         @gems[name] = GemInfo.new(dir, name: name, deps: e["deps"])
         name
       end

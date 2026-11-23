@@ -10,8 +10,9 @@
 # the gems of the build (the wait search looks into their defs); without
 # it the static closure of the mrbgem.rake dependencies serves.
 # --deps-file is what the build passes: its gems as a JSON array of
-# {"name", "dir", "deps"}. It names the gems as --deps does and adds the
-# ones outside mrbgems/ to the graph.
+# {"name", "dir", "deps"}. It names the gems as --deps does, adds the
+# ones outside mrbgems/ to the graph and gives every gem the dependencies
+# the build resolved.
 
 require "optparse"
 require_relative "picoruby_aot/deps"
