@@ -32,6 +32,7 @@ changes nothing:
 conf.aot                                     # the Spinel submodule, built in place
 conf.aot path: "/path/to/spinel"             # an explicit binary
 conf.gem(core: 'picoruby-json') { |g| g.aot = false }   # opt out
+conf.gem(github: "someone/picoruby-foo") { |g| g.aot = true }   # a gem outside mrbgems/
 ```
 
 Spinel is the submodule `lib/spinel` of this gem. Initialize it once:

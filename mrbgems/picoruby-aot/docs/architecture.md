@@ -101,8 +101,11 @@ A `def` becomes a cfunc when all of these hold:
   `terminate`, `name` return at once), and on wasm the
   `_*_and_suspend` primitives behind `JS::Promise#await` and `JS.fetch`),
   directly or through another method of the gem or of another gem of
-  the build (`aot-gen --deps`, the build's gem set written to
-  `aot/deps.txt`; a gem the target does not carry cannot be called). A
+  the build (`aot-gen --deps-file`, the build's gem set written to
+  `aot/deps.json` with the name, the directory and the resolved
+  dependencies of each gem, so that a gem outside `mrbgems/` is found
+  too and a dependency in a branch the build does not take is left out;
+  a gem the target does not carry cannot be called). A
   cfunc cannot yield to other tasks. Spinel types nothing inside
   a dependency, so there the search follows only what it can resolve: a
   bare call to the same scope, a receiver the RBS or a guard settles
@@ -520,9 +523,15 @@ GC, the method lookups before the direct calls and the DOM calls.
 ## 6. Tools and layout
 
 - `tools/aot-gen --gem GEM --out-c FILE --out-rb DIR [--manifest FILE]
-  [--exclude A#b,C.d] [--include-widened] [--types JSON]`: the generator
-  the build calls. It runs Spinel itself unless `--types` is given
-  (`SPINEL=/path/to/spinel`, or `spinel` on PATH).
+  [--exclude A#b,C.d] [--include-widened] [--deps a,b,c]
+  [--deps-file JSON] [--types JSON]`: the generator the build calls. It
+  runs Spinel itself unless `--types` is given
+  (`SPINEL=/path/to/spinel`, or `spinel` on PATH). The build passes
+  `--deps-file build/<target>/mrbgems/GEM/aot/deps.json`: its gems with
+  their directories and the dependencies it resolved. A run by hand
+  without it knows the gems under `mrbgems/` only and takes every
+  `add_dependency` of a `mrbgem.rake`, whatever branch it is in; pass the
+  build's file to get what the build gets.
 - `tools/aot-analyze [--all | GEM...]`: run Spinel over gems and report
   how many defs are fully typed.
 - `tools/picoruby_aot/`: the gem graph (`gems.rb`), the RBS-to-Ruby

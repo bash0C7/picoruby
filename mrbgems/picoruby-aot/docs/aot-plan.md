@@ -341,7 +341,11 @@ The measurements that keep them undeclared are in section 3.
   `rake test:gems:aot_twin32`, then refresh the counts in section 2
   (`SPINEL=mrbgems/picoruby-aot/lib/spinel/bin/spinel ruby
   mrbgems/picoruby-aot/tools/aot-gen --include-widened --gem GEM ...
-  --manifest FILE`). Move a done item to `architecture.md`.
+  --manifest FILE`; add `--deps-file
+  build/<target>/mrbgems/<an AOT gem>/aot/deps.json` to count against
+  the gems and dependencies of a build instead of every
+  `add_dependency` in the `mrbgem.rake` files). Move a done item to
+  `architecture.md`.
 - After a semantics change: update `architecture.md` section 4.
 - After a device measurement: add the number to `architecture.md`
   section 5 for a declared gem, or to section 3 here for a decision
