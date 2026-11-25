@@ -61,8 +61,8 @@ module PicorubyAot
     ENGINE = "mruby"
 
     # The copy of mrblib file `f` of gem `g` that Spinel reads: the source
-    # with its RUBY_ENGINE branches folded, under src/<gem>/. Positions in
-    # the copy are positions in the source.
+    # with its RUBY_ENGINE branches folded, under src/<gem>/, refreshed when
+    # the folded text changes. Positions in the copy are positions in the source.
     def copy_of(g, f)
       copy = File.join(@root, "src", g.name, f.sub(g.dir + "/", ""))
       write_if_changed(copy, EngineFold.fold(File.read(f), engine: ENGINE))

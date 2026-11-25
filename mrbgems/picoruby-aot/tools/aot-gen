@@ -6,9 +6,9 @@
 #                 [--deps-file JSON] [--types JSON]
 #
 # Without --types the tool runs spinel itself (SPINEL=/path/to/spinel, or
-# `spinel` on PATH) and keeps its output under the workspace. --deps-file
-# gives the gems of the build (the wait search looks into their defs);
-# without it the static closure of the mrbgem.rake dependencies serves.
+# `spinel` on PATH) and keeps its output under the workspace. --deps-file names
+# the gems of the build (the wait search looks into their defs); without
+# it the static closure of the mrbgem.rake dependencies serves.
 
 require "optparse"
 require_relative "picoruby_aot/deps"
@@ -61,8 +61,8 @@ json =
 
 typemap = PicorubyAot::TypeMap.new(json)
 # The gems whose defs take part in the wait search: the build's own gem
-# set when the build names it (--deps-file), else the static closure of
-# the mrbgem.rake dependencies, which ignores the conditions in them (a
+# set when the build names it (--deps-file), else the static closure of the
+# mrbgem.rake dependencies, which ignores the conditions in them (a
 # wasm build gets vfs through sqlite3's non-wasm branch) and so names
 # waits the target can never meet.
 deps = (build_gems || graph.closure(gem.name)).reject { |g| g.name == gem.name }
