@@ -45,16 +45,14 @@ module MRuby
         exclude << " --include-widened" if aot_include_widened
         workspace = "#{build.build_dir}/aot-workspace"
         manifest = "#{aot_dir}/manifest.json"
-        # The gems of this build: name, directory and the dependencies the
-        # build resolved. The generator's wait search looks into their defs
-        # (a call into a gem that suspends the task keeps the caller in the
-        # irep), so the set is an input of the C: the file changes only
-        # when the set does, and the C depends on it. A name alone would
-        # not do: a gem outside mrbgems/ is found by its directory only.
+        # The gems of this build. The generator's wait search looks into
+        # their defs (a call into a gem that suspends the task keeps the
+        # caller in the irep), so the set is an input of the C: the file
+        # changes only when the set does, and the C depends on it.
         deps_file = "#{aot_dir}/deps.json"
         deps_text = -> {
           gems = build.gems.sort_by(&:name).map do |g|
-            { "name" => g.name, "dir" => g.dir, "deps" => g.dependencies.map { |d| d[:gem] } }
+            { "name" => g.name, "dir" => g.dir, "require_name" => g.require_name, "deps" => g.dependencies.map { |d| d[:gem] } }
           end
           JSON.pretty_generate(gems) + "\n"
         }

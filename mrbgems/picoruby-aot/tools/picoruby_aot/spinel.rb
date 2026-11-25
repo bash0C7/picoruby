@@ -39,28 +39,21 @@ module PicorubyAot
       FileUtils.rm_rf(@root)
       FileUtils.mkdir_p(feature_root(:stubs))
       FileUtils.mkdir_p(feature_root(:source))
+      ensure_features
       @graph.each do |g|
         next if g.rbfiles.empty?
-        [:stubs, :source].each do |mode|
-          path = File.join(feature_root(mode), g.require_name + ".rb")
-          FileUtils.mkdir_p(File.dirname(path))
-          body = mode == :source ? g.rbfiles.map { |f| "require_relative #{rel(copy_of(g, f), path).inspect}\n" }.join : "# #{g.name}: provided by RBS stubs\n"
-          File.write(path, body)
-        end
+        path = File.join(feature_root(:source), g.require_name + ".rb")
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, g.rbfiles.map { |f| "require_relative #{rel(copy_of(g, f), path).inspect}\n" }.join)
       end
       self
     end
 
-    # The stub feature file of every gem of the graph that has Ruby, so
-    # that `require "name"` resolves for a gem that joined the build after
-    # the workspace was made. Not `prepare` again: it removes the whole
-    # workspace, and with it the output of the other gems of the build.
     def ensure_features
       @graph.each do |g|
         next if g.rbfiles.empty?
-        write_if_changed(File.join(feature_root(:stubs), g.require_name + ".rb"), "# #{g.name}: provided by RBS stubs\n")
+        write_if_changed(File.join(feature_root(:stubs), g.require_name + ".rb"), "# provided by RBS stubs\n")
       end
-      self
     end
 
     # The engine the generated C runs on, which the workspace folds the
@@ -72,9 +65,6 @@ module PicorubyAot
     # the copy are positions in the source.
     def copy_of(g, f)
       copy = File.join(@root, "src", g.name, f.sub(g.dir + "/", ""))
-      # Compared by content, not by mtime: a gem of the same name may now
-      # come from another directory, whose source can be older than the
-      # copy.
       write_if_changed(copy, EngineFold.fold(File.read(f), engine: ENGINE))
       copy
     end
@@ -132,9 +122,6 @@ module PicorubyAot
 
     private
 
-    # Write `content` to `path` unless the file already holds it, so that
-    # an unchanged file keeps its mtime. Not written in place: under
-    # `rake -m` another aot-gen may be reading the file.
     def write_if_changed(path, content)
       return if File.exist?(path) && File.read(path) == content
       FileUtils.mkdir_p(File.dirname(path))

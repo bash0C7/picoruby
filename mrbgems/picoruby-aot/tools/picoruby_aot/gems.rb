@@ -8,16 +8,17 @@ require "set"
 
 module PicorubyAot
   class GemInfo
-    attr_reader :name, :dir, :require_name, :rbfiles, :sigfiles, :deps
+    attr_reader :name, :dir, :rbfiles, :sigfiles
+    attr_accessor :require_name, :deps
 
-    def initialize(dir, name: nil, deps: nil)
-      @dir = File.expand_path(dir)
-      @name = name || File.basename(@dir)
+    def initialize(dir, name: nil)
+      @dir = File.realpath(dir)
+      @name = name || File.basename(dir)
       rake = File.exist?(rakefile) ? File.read(rakefile) : ""
       @require_name = rake[/require_name\s*=\s*['"]([^'"]+)/, 1] || @name.sub(/\Apicoruby-/, "")
       @rbfiles = Dir.glob("#{@dir}/mrblib/**/*.rb").sort
       @sigfiles = Dir.glob("#{@dir}/sig/**/*.rbs").sort
-      @deps = deps || rake.scan(/add_dependency\s+['"]([^'"]+)['"]/).flatten.uniq
+      @deps = rake.scan(/add_dependency\s+['"]([^'"]+)['"]/).flatten.uniq
     end
 
     def rakefile
@@ -37,7 +38,7 @@ module PicorubyAot
     attr_reader :gems
 
     def initialize(mrbgems_dir)
-      @mrbgems_dir = File.expand_path(mrbgems_dir)
+      @mrbgems_dir = File.realpath(mrbgems_dir)
       @gems = {}
       Dir.glob("#{@mrbgems_dir}/picoruby-*/").sort.each do |d|
         g = GemInfo.new(d)
@@ -45,22 +46,15 @@ module PicorubyAot
       end
     end
 
-    # The gems of the build ({"name", "dir", "deps"} each) take their place
-    # in the graph: a gem outside mrbgems/ joins it, and a gem already there
-    # is replaced, by another directory or by itself with the dependencies
-    # the build resolved. Returns the names of all of them.
     def add_build_gems(gems)
-      gems.map do |e|
-        name = e["name"]
-        dir = File.expand_path(e["dir"])
-        # Not the upstream mruby gems (under mrbgems/, absent from the
-        # graph): they stay out of the wait search. And an in-tree gem does
-        # not keep the dependencies read from its mrbgem.rake: those name
-        # every branch, and a branch this build does not take would bring
-        # into the closure the RBS of a gem the target does not carry.
-        next name if dir.start_with?("#{@mrbgems_dir}/") && !@gems.key?(name)
-        @gems[name] = GemInfo.new(dir, name: name, deps: e["deps"])
-        name
+      gems.filter_map do |e|
+        dir = File.realpath(e["dir"])
+        g = @gems[e["name"]]
+        next if g.nil? && dir.start_with?("#{@mrbgems_dir}/")
+        g = @gems[e["name"]] = GemInfo.new(dir, name: e["name"]) unless g&.dir == dir
+        g.deps = e["deps"]
+        g.require_name = e["require_name"] if e["require_name"]
+        g
       end
     end
 
